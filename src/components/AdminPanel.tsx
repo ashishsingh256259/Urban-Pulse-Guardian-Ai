@@ -142,6 +142,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const nextStatus = !user.active;
     await toggleUserStatus(user.id, nextStatus, currentAdminEmail);
     setUsers(prev => prev.map(u => u.id === user.id ? { ...u, active: nextStatus } : u));
+    onUserUpdated?.();
     showNotification(`User ${user.fullName} has been ${nextStatus ? "activated" : "deactivated"}.`);
   };
 
@@ -149,6 +150,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!editingUser) return;
     await updateUserRole(editingUser.id, newRoleInput, newDeptInput, currentAdminEmail);
     setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, role: newRoleInput, department: newDeptInput } : u));
+    onUserUpdated?.();
     setEditingUser(null);
     showNotification(`Updated role for ${editingUser.fullName} to ${newRoleInput.toUpperCase()}.`);
   };
@@ -158,6 +160,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const nextStatus = !team.active;
     await toggleTeamStatus(team.id, nextStatus, currentAdminEmail);
     setTeams(prev => prev.map(t => t.id === team.id ? { ...t, active: nextStatus } : t));
+    onUserUpdated?.();
     showNotification(`Team ${team.name} has been ${nextStatus ? "activated" : "deactivated"}.`);
   };
 
@@ -179,6 +182,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     );
 
     setTeams(prev => [created, ...prev]);
+    onUserUpdated?.();
     setShowCreateTeamModal(false);
     setNewTeamName("");
     setNewTeamLead("");
@@ -189,6 +193,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!editingTeam) return;
     await updatePlatformTeam(editingTeam.id, editingTeam, currentAdminEmail);
     setTeams(prev => prev.map(t => t.id === editingTeam.id ? editingTeam : t));
+    onUserUpdated?.();
     setEditingTeam(null);
     showNotification(`Updated configuration for ${editingTeam.name}.`);
   };

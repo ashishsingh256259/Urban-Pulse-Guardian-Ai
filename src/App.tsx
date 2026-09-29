@@ -35,7 +35,7 @@ import {
   MapPin, AlertOctagon, CheckSquare, Clock, ArrowRight, Save, User as UserIcon, Lock, Landmark, Sparkles, AlertCircle, Loader2, LogIn, UserPlus, Mail,
   Terminal, Activity, Columns, Bell, LogOut, RefreshCw, Menu, X, Check, Laptop, ChevronRight, ChevronDown, Compass, Wind, LayoutDashboard, BarChart3,
   Camera, Navigation, Award, AlertTriangle, ShieldCheck, FileText, Wrench, Shield,
-  Users, Briefcase, Server, Settings, Radio, Send
+  Users, Briefcase, Server, Settings, Radio, Send, Moon, Sun
 } from "lucide-react";
 
 
@@ -121,6 +121,12 @@ export default function App() {
 
   const [loadingReports, setLoadingReports] = useState(true);
   const [appOnline, setAppOnline] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem("urbanpulse_theme") === "dark");
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", isDarkMode);
+    localStorage.setItem("urbanpulse_theme", isDarkMode ? "dark" : "light");
+  }, [isDarkMode]);
   
   // Sovereign Multi-City ready states
   const [selectedCityName, setSelectedCityName] = useState("New Delhi (NCR)");
@@ -819,6 +825,15 @@ export default function App() {
 
             {/* Header Right Controls */}
             <div className="flex items-center gap-2 sm:gap-3">
+              <button
+                type="button"
+                onClick={() => setIsDarkMode((enabled) => !enabled)}
+                className="theme-toggle p-2 rounded-xl border border-[#CBD5E1] bg-white/80 hover:bg-[#EFF6FF] text-[#475569] transition-all cursor-pointer"
+                title={isDarkMode ? "Use light mode" : "Use dark mode"}
+                aria-label={isDarkMode ? "Use light mode" : "Use dark mode"}
+              >
+                {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              </button>
               {/* Unified Sovereign Jurisdiction Selector in Top Header */}
               <div ref={jurisdictionMenuRef} className="relative flex flex-col items-end text-right">
                 <span className="text-[7.5px] sm:text-[8px] font-mono font-bold text-[#64748B] uppercase tracking-wider leading-none mb-0.5 sm:mb-1">
@@ -2442,7 +2457,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* 2. ROLE SELECTOR TABS (Sign In: Citizen, Field Team, Municipal) */}
+            {/* 2. ROLE SELECTOR TABS (Sign In: Citizen, Municipal, Admin) */}
             {isLoginView ? (
               <div className="flex w-full gap-2 mb-5">
                 <button
@@ -2477,7 +2492,7 @@ export default function App() {
                   }`}
                 >
                   <Wrench className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Field Team</span>
+                  <span>Municipal</span>
                 </button>
                 <button
                   type="button"
@@ -2494,7 +2509,7 @@ export default function App() {
                   }`}
                 >
                   <Landmark className="w-3.5 h-3.5 text-amber-600" />
-                  <span>Command</span>
+                  <span>Admin</span>
                 </button>
               </div>
             ) : (

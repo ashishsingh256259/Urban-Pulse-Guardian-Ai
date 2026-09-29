@@ -434,7 +434,7 @@ async function generateContentWithFallback(
 // ===================================================
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Trust reverse proxy (Cloud Run / Nginx) to accurately process X-Forwarded-For headers
 app.set("trust proxy", 1);

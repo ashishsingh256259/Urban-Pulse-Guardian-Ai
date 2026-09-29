@@ -29,6 +29,7 @@ import {
   calculateHaversineDistanceMeters,
   findNearbyExistingIncident 
 } from "../services/spatialClustering";
+import { uploadRoadScanEvidenceFrame } from "../services/storageService";
 
 // Input source types
 export type ScannerInputSource = "VEHICLE_DASHCAM" | "PHONE_CAMERA" | "RECORDED_VIDEO";
@@ -71,6 +72,8 @@ export interface AutoReportedIncident {
   timestamp: string;
   sourceCamera: string;
   evidenceImage: string;
+  latitude: number;
+  longitude: number;
   observationsCount: number;
   workflowState: string;
 }
@@ -154,6 +157,10 @@ export default function RoadScanner({
   const gpsWatchIdRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(Date.now());
   const activeSessionIdRef = useRef<string>(`SCAN-SES-${Date.now().toString().slice(-6)}`);
+  const frameSequenceRef = useRef<number>(0);
+  // Intervals retain their initial React closure. Keep the latest GPS fix in a ref so
+  // every captured frame receives its real location rather than the startup fallback.
+  const currentGpsRef = useRef<GPSCoordinate | null>(null);
   
   // Real-time AI Throttler Refs
   const aiInFlightRef = useRef<boolean>(false);
@@ -171,6 +178,10 @@ export default function RoadScanner({
   const lastFrameTimeRef = useRef<number>(performance.now());
   const frameDeltasRef = useRef<number[]>([]);
   const animFrameIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    currentGpsRef.current = currentGps;
+  }, [currentGps]);
 
   // Minimum confidence threshold constant (55%)
   const MIN_DETECTION_CONFIDENCE = 55;
@@ -553,19 +564,12 @@ export default function RoadScanner({
 
     // STEP 6: Check 5-meter deduplication radius against confirmed incidents
     const existingConfirmed = confirmedIncidentsRef.current;
-    const nearbyMatch = findNearbyExistingIncident(lat, lng, existingConfirmed.map(inc => ({
-      ...inc,
-      latitude: track.gps.latitude, // placeholder if not directly on inc
-      longitude: track.gps.longitude
-    })), 5.0);
-
     let isMerged = false;
     let targetIncidentId = "";
 
     // Check direct distance against all confirmed items
     for (const inc of existingConfirmed) {
-      // Parse coordinates from location or compare
-      const dist = calculateHaversineDistanceMeters(lat, lng, track.gps.latitude, track.gps.longitude);
+      const dist = calculateHaversineDistanceMeters(lat, lng, inc.latitude, inc.longitude);
       if (dist <= 5.0) {
         isMerged = true;
         targetIncidentId = inc.id;
@@ -595,6 +599,9 @@ export default function RoadScanner({
     const incidentId = `UPG-2026-${Date.now().toString().slice(-5)}`;
     const sourceLabel = source === "VEHICLE_DASHCAM" ? "Vehicle Dashcam" : source === "PHONE_CAMERA" ? "Phone Camera" : "Recorded Video";
     const readableLocation = `Corridor Point [${lat.toFixed(4)}, ${lng.toFixed(4)}]`;
+    const evidenceImage = await uploadRoadScanEvidenceFrame(
+      currentUserEmail || "scanner", sessionId, incidentId, track.hits, track.bestImage
+    );
 
     const newAutoIncident: AutoReportedIncident = {
       id: incidentId,
@@ -606,7 +613,9 @@ export default function RoadScanner({
       location: readableLocation,
       timestamp: new Date().toLocaleTimeString(),
       sourceCamera: sourceLabel,
-      evidenceImage: track.bestImage,
+      evidenceImage,
+      latitude: lat,
+      longitude: lng,
       observationsCount: track.hits,
       workflowState: "MUNICIPAL QUEUED"
     };
@@ -635,8 +644,8 @@ export default function RoadScanner({
       location: readableLocation,
       latitude: lat,
       longitude: lng,
-      primaryImage: track.bestImage,
-      evidenceFrames: [track.bestImage],
+      primaryImage: evidenceImage,
+      evidenceFrames: [evidenceImage],
       detectionsCount: track.hits,
       observationsCount: track.hits,
       boundingBox: track.bestBbox,
@@ -688,8 +697,8 @@ export default function RoadScanner({
           location: readableLocation,
           latitude: lat,
           longitude: lng,
-          image: track.bestImage,
-          evidenceFrames: [track.bestImage],
+          image: evidenceImage,
+          evidenceFrames: [evidenceImage],
           source: "ROAD_SCANNER",
           sourceCamera: sourceLabel,
           boundingBox: track.bestBbox,
@@ -724,9 +733,9 @@ export default function RoadScanner({
       return;
     }
 
-    // Check pacing (minimum 2.5 seconds between calls to prevent rate limiting)
+    // One request per second yields adjacent observations without flooding the API.
     const now = Date.now();
-    if (now - lastAiCallTimeRef.current < 2500) {
+    if (now - lastAiCallTimeRef.current < 1000) {
       return;
     }
 
@@ -862,7 +871,7 @@ export default function RoadScanner({
               }
 
               // Confirm if 2 consecutive hits or single high confidence (>= 88%)
-              if (track.hits >= 2 || det.confidence >= 88) {
+              if (!track.reportedIncidentId && (track.hits >= 2 || det.confidence >= 88)) {
                 track.confirmed = true;
                 await processConfirmedHazard(track);
               }
@@ -890,7 +899,7 @@ export default function RoadScanner({
 
               temporalTracksRef.current.set(trackKey, newTrack);
 
-              if (newTrack.confirmed) {
+              if (newTrack.confirmed && !newTrack.reportedIncidentId) {
                 await processConfirmedHazard(newTrack);
               }
             }
@@ -934,6 +943,7 @@ export default function RoadScanner({
     setAiStatusNotice(null);
     temporalTracksRef.current.clear();
     confirmedIncidentsRef.current = [];
+    frameSequenceRef.current = 0;
 
     // 1. Initialize Video/Camera Stream
     let stream: MediaStream | null = null;
@@ -965,8 +975,8 @@ export default function RoadScanner({
 
     // 3. Duration & Continuous Sampling Loop
     durationIntervalRef.current = setInterval(() => {
-      setRecordingDuration((prev) => {
-        const nextSec = prev + 1;
+      setRecordingDuration(() => {
+        const nextSec = Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000));
         // Continuous sampling every 1 second
         if (videoRef.current && videoRef.current.readyState >= 2) {
           const liveCap = captureFrameFromVideoElement(videoRef.current, 640, 480);
@@ -974,12 +984,12 @@ export default function RoadScanner({
             setExtractedFramesCount((c) => c + 1);
             const frameObj: ExtractedFrame = {
               id: `FRM-${Date.now()}-${nextSec}`,
-              index: nextSec,
+              index: ++frameSequenceRef.current,
               timestamp: Date.now(),
               dataUrl: liveCap.dataUrl,
               width: 640,
               height: 480,
-              gps: currentGps || { latitude: 28.6139, longitude: 77.2090, timestamp: Date.now() }
+              gps: currentGpsRef.current || { latitude: 28.6139, longitude: 77.2090, timestamp: Date.now() }
             };
             frameRingBufferRef.current.push(frameObj);
             if (frameRingBufferRef.current.length > 10) {
@@ -992,7 +1002,7 @@ export default function RoadScanner({
         }
         return nextSec;
       });
-    }, 1000);
+    }, 700);
   };
 
   const handlePauseScan = () => {
@@ -1022,8 +1032,22 @@ export default function RoadScanner({
     }
 
     durationIntervalRef.current = setInterval(() => {
-      setRecordingDuration((prev) => prev + 1);
-    }, 1000);
+      setRecordingDuration(Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000)));
+      if (videoRef.current && videoRef.current.readyState >= 2) {
+        const liveCap = captureFrameFromVideoElement(videoRef.current, 640, 480);
+        if (liveCap) {
+          setExtractedFramesCount((count) => count + 1);
+          const frameObj: ExtractedFrame = {
+            id: `FRM-${Date.now()}-resume`, index: ++frameSequenceRef.current,
+            timestamp: Date.now(), dataUrl: liveCap.dataUrl, width: 640, height: 480,
+            gps: currentGpsRef.current || { latitude: 28.6139, longitude: 77.2090, timestamp: Date.now() }
+          };
+          frameRingBufferRef.current.push(frameObj);
+          if (frameRingBufferRef.current.length > 10) frameRingBufferRef.current.shift();
+          triggerThrottledAiAnalysis(frameObj);
+        }
+      }
+    }, 700);
   };
 
   const handleFinishScan = async () => {

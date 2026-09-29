@@ -60,7 +60,8 @@ export default function SimpleMap({
       zoomControl: false
     });
 
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+    const tileUrl = import.meta.env.VITE_MAP_TILE_URL || "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
+    L.tileLayer(tileUrl, {
       maxZoom: 20,
       attribution: '&copy; <a href="https://carto.com/">CARTO</a>'
     }).addTo(map);
