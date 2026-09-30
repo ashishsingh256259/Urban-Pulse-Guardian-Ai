@@ -114,19 +114,17 @@ export async function uploadReportEvidence(
           await uploadString(storageRef, imageData, "raw");
         }
       } else {
-        const contentType = imageData instanceof File ? imageData.type : "image/jpeg";
+        const contentType = imageData instanceof File && imageData.type ? imageData.type : "image/jpeg";
         await uploadBytes(storageRef, imageData, { contentType });
       }
       return await getDownloadURL(storageRef);
     };
 
-    return await withTimeout(uploadTask(), 8000, "Firebase Storage evidence upload timed out.");
-  } catch (error) {
-    console.warn("Firebase Storage upload failed (falling back to direct reference):", error);
-    if (typeof imageData === "string") {
-      return imageData;
-    }
-    return URL.createObjectURL(imageData);
+    return await withTimeout(uploadTask(), 15000, "Firebase Storage evidence upload timed out. Please check your network and retry.");
+  } catch (error: any) {
+    const errMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[StorageService] Evidence upload failed for path ${path}:`, errMessage);
+    throw new Error(`Firebase Storage upload failed: ${errMessage}`);
   }
 }
 
@@ -189,32 +187,50 @@ export async function uploadFieldEvidence(
  */
 export async function uploadEvidenceImage(
   fileOrData: File | Blob | string,
-  userId: string = "anonymous"
+  userId: string,
+  reportId?: string
 ): Promise<{ success: boolean; downloadUrl?: string; error?: string; isFallback?: boolean }> {
   try {
-    const tempReportId = `REP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    const filename = fileOrData instanceof File ? fileOrData.name : "evidence.jpg";
-    const downloadUrl = await uploadReportEvidence(userId, tempReportId, fileOrData, filename);
+    if (!userId || userId === "anonymous") {
+      return {
+        success: false,
+        isFallback: false,
+        error: "Authentication required: Cannot upload evidence without an authenticated Firebase user session."
+      };
+    }
+
+    // If already an authenticated remote URL, return immediately without re-uploading
+    if (
+      typeof fileOrData === "string" &&
+      (fileOrData.startsWith("https://") || fileOrData.startsWith("http://")) &&
+      !fileOrData.startsWith("blob:") &&
+      !fileOrData.startsWith("data:")
+    ) {
+      return { success: true, downloadUrl: fileOrData, isFallback: false };
+    }
+
+    const targetReportId = reportId || `REP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const filename = fileOrData instanceof File ? fileOrData.name : `evidence_${Date.now()}.jpg`;
+    const downloadUrl = await uploadReportEvidence(userId, targetReportId, fileOrData, filename);
     
     const isRemoteUrl = typeof downloadUrl === "string" && 
       (downloadUrl.startsWith("https://firebasestorage.googleapis.com") ||
        downloadUrl.startsWith("https://storage.googleapis.com") ||
-       (downloadUrl.startsWith("https://") && !downloadUrl.startsWith("blob:")));
+       (downloadUrl.startsWith("https://") && !downloadUrl.startsWith("blob:") && !downloadUrl.startsWith("data:")));
 
     if (isRemoteUrl) {
       return { success: true, downloadUrl, isFallback: false };
     } else {
       return { 
         success: false, 
-        downloadUrl, 
-        isFallback: true, 
-        error: "Firebase Storage upload was unavailable; preserved local reference." 
+        isFallback: false, 
+        error: "Firebase Storage returned an invalid evidence download URL." 
       };
     }
   } catch (err: any) {
-    console.warn("Evidence upload error:", err);
-    const fallbackUrl = typeof fileOrData === "string" ? fileOrData : undefined;
-    return { success: false, downloadUrl: fallbackUrl, isFallback: true, error: err?.message || "Upload failed" };
+    const errorMsg = err?.message || "Storage upload failed. Please verify your network and permissions.";
+    console.error("[StorageService] Evidence upload error:", errorMsg);
+    return { success: false, isFallback: false, error: errorMsg };
   }
 }
 
@@ -240,6 +256,6 @@ export async function uploadRoadScanEvidenceFrame(
     return await getDownloadURL(storageRef);
   } catch (error) {
     console.warn("Road scan storage upload error:", error);
-    return base64DataUrl;
+    throw new Error(`Road scan storage upload failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

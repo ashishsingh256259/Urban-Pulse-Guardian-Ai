@@ -24,6 +24,68 @@ type WorkflowStep = "FORM" | "ANALYZING" | "REVIEW" | "IRRELEVANT" | "SUBMITTING
 
 const DEFAULT_DELHI_COORDS = { lat: 28.6139, lng: 77.2090 };
 
+/**
+ * Client-side image compression targeting max 1280px dimension and JPEG quality ~0.75.
+ * Keeps file payload lean for fast network uploads and reduces Storage bandwidth.
+ */
+async function compressImageFile(file: File, maxWidth = 1280, maxHeight = 1280, quality = 0.75): Promise<File> {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith("image/") || file.type.includes("svg")) {
+      return resolve(file);
+    }
+
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let { width, height } = img;
+
+      // If dimensions are within bounds and file is reasonably small (< 500KB), keep as-is
+      if (width <= maxWidth && height <= maxHeight && file.size < 500 * 1024) {
+        return resolve(file);
+      }
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return resolve(file);
+
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return resolve(file);
+          const cleanName = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+          const compressed = new File([blob], cleanName, {
+            type: "image/jpeg",
+            lastModified: Date.now()
+          });
+          resolve(compressed);
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(file);
+    };
+    img.src = objectUrl;
+  });
+}
+
 export default function CitizenUpload({ onReportCreated, currentUserEmail, onViewReportDetails }: CitizenUploadProps) {
   const { user, userProfile } = useAuth();
   
@@ -45,6 +107,10 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
   const [fileError, setFileError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Preserve uploaded Storage URL and target report ID for idempotent retries
+  const uploadedStorageUrlRef = useRef<string | null>(null);
+  const activeReportIdRef = useRef<string | null>(null);
+
   // Analysis result for review stage
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResponse | null>(null);
   const [createdReport, setCreatedReport] = useState<Report | null>(null);
@@ -64,11 +130,11 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
 
   // Development Diagnostics state
   const [diagTrace, setDiagTrace] = useState({
-    submissionStatus: "IDLE" as "IDLE" | "SUBMITTING" | "SUCCESS" | "ERROR",
-    aiStatus: "SKIPPED" as "SUCCESS" | "NO_HAZARD" | "AI_UNAVAILABLE" | "SKIPPED",
-    storageStatus: "PENDING" as "PENDING" | "SUCCESS" | "SKIPPED" | "ERROR",
+    submissionStatus: "IDLE" as "IDLE" | "VALIDATING" | "SUCCESS" | "ERROR",
+    aiStatus: "PENDING" as "PENDING" | "SUCCESS" | "AI_UNAVAILABLE" | "ERROR",
+    storageStatus: "PENDING" as "PENDING" | "SUCCESS" | "ERROR",
     firestoreStatus: "PENDING" as "PENDING" | "SUCCESS" | "ERROR",
-    notificationStatus: "PENDING" as "PENDING" | "SUCCESS" | "ERROR",
+    notificationStatus: "PENDING" as "PENDING" | "SUCCESS" | "ERROR" | "SKIPPED",
     reportId: null as string | null,
     lastEvent: "IDLE"
   });
@@ -220,15 +286,18 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
           context.scale(-1, 1);
         }
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.80);
         
         // Convert to File object for unified Storage uploads
         fetch(dataUrl)
           .then((res) => res.blob())
           .then((blob) => {
-            const capturedFile = new File([blob], `evidence_${Date.now()}.jpg`, { type: "image/jpeg" });
+            const capturedFile = new File([blob], `camera_capture_${Date.now()}.jpg`, { type: "image/jpeg" });
             setRawImageFile(capturedFile);
           });
+
+        uploadedStorageUrlRef.current = null;
+        activeReportIdRef.current = null;
 
         const approxBytes = Math.round((dataUrl.length * 3) / 4);
         const sizeStr = approxBytes > 1024 * 1024
@@ -313,7 +382,7 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
       { enableHighAccuracy: true, timeout: 8000 }
     );
   };
-  const handleFileProcess = (file: File) => {
+  const handleFileProcess = async (file: File) => {
     const validation = validateEvidenceFile(file);
     if (!validation.valid) {
       setFileError(validation.error || "Invalid file selected.");
@@ -321,20 +390,43 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
       setRawImageFile(null);
       setFileName(null);
       setFileSize(null);
+      uploadedStorageUrlRef.current = null;
+      activeReportIdRef.current = null;
       return;
     }
 
     setFileError(null);
     setFormError(null);
-    setRawImageFile(file);
-    setFileName(file.name);
-    setFileSize(validation.sizeFormatted || "Unknown size");
+    uploadedStorageUrlRef.current = null;
+    activeReportIdRef.current = null;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImagePreview(reader.result as string);
-    };
-    reader.readAsDataURL(file);
+    try {
+      const compressedFile = await compressImageFile(file, 1280, 1280, 0.75);
+      setRawImageFile(compressedFile);
+      setFileName(compressedFile.name);
+
+      const compSizeFormatted = compressedFile.size > 1024 * 1024
+        ? `${(compressedFile.size / (1024 * 1024)).toFixed(1)} MB`
+        : `${(compressedFile.size / 1024).toFixed(0)} KB`;
+      setFileSize(compSizeFormatted);
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(compressedFile);
+    } catch (compErr) {
+      console.warn("Client-side compression fallback to original file:", compErr);
+      setRawImageFile(file);
+      setFileName(file.name);
+      setFileSize(validation.sizeFormatted || "Unknown size");
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -395,7 +487,7 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
     setAiStatusMessage("Connecting to AI evaluation endpoint...");
 
     console.log("[Diagnostics] AI_VALIDATION_STARTED");
-    setDiagTrace(prev => ({ ...prev, aiStatus: "SKIPPED", lastEvent: "AI_VALIDATION_STARTED" }));
+    setDiagTrace(prev => ({ ...prev, aiStatus: "PENDING", lastEvent: "AI_VALIDATION_STARTED" }));
 
     const progressTimer = setInterval(() => {
       setAiProgress((prev) => {
@@ -433,7 +525,7 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
 
           if (!result.issueDetected) {
             console.log("[Diagnostics] AI_VALIDATION_COMPLETED: NO_HAZARD");
-            setDiagTrace(prev => ({ ...prev, aiStatus: "NO_HAZARD", lastEvent: "AI_VALIDATION_COMPLETED" }));
+            setDiagTrace(prev => ({ ...prev, aiStatus: "SUCCESS", lastEvent: "AI_VALIDATION_COMPLETED" }));
             setCurrentStep("IRRELEVANT");
             return;
           }
@@ -498,8 +590,8 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
     console.log("[Diagnostics] SUBMISSION_STARTED");
     setDiagTrace(prev => ({
       ...prev,
-      submissionStatus: "SUBMITTING",
-      lastEvent: "SUBMISSION_STARTED"
+      submissionStatus: "VALIDATING",
+      lastEvent: "SUBMISSION_VALIDATING"
     }));
 
     const activeAnalysis = aiAnalysis || {
@@ -530,8 +622,8 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
       return;
     }
 
-    const currentUid = auth.currentUser?.uid || user?.uid || userProfile?.uid;
-    if (!currentUid) {
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) {
       setCurrentStep("REVIEW");
       setFormError("Authentication required: Please sign in before submitting an incident report.");
       setDiagTrace(prev => ({ ...prev, submissionStatus: "ERROR", lastEvent: "AUTH_REQUIRED" }));
@@ -539,37 +631,66 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
       setIsSubmitting(false);
       return;
     }
-    let finalEvidenceUrl = imagePreview;
+    const currentUid = currentAuthUser.uid;
+
+    // 0. GENERATE OR PRESERVE REPORT ID
+    const targetReportId = activeReportIdRef.current || `UP-${Math.floor(1000 + Math.random() * 9000)}`;
+    activeReportIdRef.current = targetReportId;
 
     // 1. EVIDENCE CHECK & STORAGE UPLOAD
-    const hasRawFile = rawImageFile && rawImageFile.size > 0;
-    const hasPreviewData = imagePreview && imagePreview.length > 50;
+    let finalEvidenceUrl: string | null = uploadedStorageUrlRef.current;
 
-    if (hasRawFile) {
+    // If already uploaded previously (e.g. user retrying after a Firestore error), reuse it
+    if (finalEvidenceUrl && (finalEvidenceUrl.startsWith("https://") || finalEvidenceUrl.startsWith("http://"))) {
+      console.log("[Diagnostics] STORAGE_REUSED: Reusing previously uploaded evidence URL:", finalEvidenceUrl);
+      setDiagTrace(prev => ({ ...prev, storageStatus: "SUCCESS", lastEvent: "STORAGE_REUSED" }));
+    } else if (rawImageFile && rawImageFile.size > 0) {
       console.log("[Diagnostics] STORAGE_UPLOAD_STARTED");
       setDiagTrace(prev => ({ ...prev, storageStatus: "PENDING", lastEvent: "STORAGE_UPLOAD_STARTED" }));
       setSubmittingStatus("Uploading evidence file to Firebase Storage...");
 
       try {
-        const uploadRes = await uploadEvidenceImage(rawImageFile, currentUid);
+        const uploadRes = await uploadEvidenceImage(rawImageFile, currentUid, targetReportId);
         if (uploadRes.success && uploadRes.downloadUrl) {
           finalEvidenceUrl = uploadRes.downloadUrl;
-          console.log("[Diagnostics] STORAGE_UPLOAD_COMPLETED");
+          uploadedStorageUrlRef.current = uploadRes.downloadUrl; // Cache for retry
+          console.log("[Diagnostics] STORAGE_UPLOAD_COMPLETED URL:", finalEvidenceUrl);
           setDiagTrace(prev => ({ ...prev, storageStatus: "SUCCESS", lastEvent: "STORAGE_UPLOAD_COMPLETED" }));
         } else {
-          console.warn("[Diagnostics] Storage upload response error, falling back to preview:", uploadRes.error);
-          setDiagTrace(prev => ({ ...prev, storageStatus: "ERROR", lastEvent: "STORAGE_UPLOAD_FALLBACK" }));
+          // STRICT REQUIREMENT: STOP submission on Storage failure! DO NOT fallback to base64!
+          console.error("[Diagnostics] STORAGE_UPLOAD_FAILED:", uploadRes.error);
+          setDiagTrace(prev => ({ ...prev, submissionStatus: "ERROR", storageStatus: "ERROR", lastEvent: "STORAGE_UPLOAD_FAILED" }));
+          setCurrentStep("REVIEW");
+          setFormError(`Evidence image upload failed: ${uploadRes.error || "Firebase Storage connection error"}. Please retry.`);
+          submitLockRef.current = false;
+          setIsSubmitting(false);
+          return;
         }
-      } catch (storageErr) {
-        console.warn("[Diagnostics] Firebase Storage upload error/timeout (falling back):", storageErr);
-        setDiagTrace(prev => ({ ...prev, storageStatus: "ERROR", lastEvent: "STORAGE_UPLOAD_TIMEOUT" }));
+      } catch (storageErr: any) {
+        console.error("[Diagnostics] STORAGE_UPLOAD_EXCEPTION:", storageErr);
+        const errDetail = storageErr instanceof Error ? storageErr.message : String(storageErr);
+        setDiagTrace(prev => ({ ...prev, submissionStatus: "ERROR", storageStatus: "ERROR", lastEvent: "STORAGE_UPLOAD_ERROR" }));
+        setCurrentStep("REVIEW");
+        setFormError(`Evidence image upload failed: ${errDetail}. Please retry.`);
+        submitLockRef.current = false;
+        setIsSubmitting(false);
+        return;
       }
-    } else if (hasPreviewData) {
-      console.log("[Diagnostics] STORAGE_UPLOAD_COMPLETED (Direct Data URL / String)");
-      setDiagTrace(prev => ({ ...prev, storageStatus: "SUCCESS", lastEvent: "STORAGE_UPLOAD_COMPLETED" }));
     } else {
       console.log("[Diagnostics] STORAGE_UPLOAD_SKIPPED (No evidence attached)");
-      setDiagTrace(prev => ({ ...prev, storageStatus: "SKIPPED", lastEvent: "STORAGE_UPLOAD_SKIPPED" }));
+      finalEvidenceUrl = null;
+      setDiagTrace(prev => ({ ...prev, storageStatus: "SUCCESS", lastEvent: "STORAGE_SKIPPED" }));
+    }
+
+    // Safety guard: NEVER allow base64 or blob: strings to proceed to Firestore
+    if (finalEvidenceUrl && (finalEvidenceUrl.startsWith("data:") || finalEvidenceUrl.startsWith("blob:"))) {
+      console.error("[Diagnostics] Base64 / blob URL intercepted before Firestore write!");
+      setDiagTrace(prev => ({ ...prev, submissionStatus: "ERROR", storageStatus: "ERROR", lastEvent: "INVALID_EVIDENCE_URL" }));
+      setCurrentStep("REVIEW");
+      setFormError("Evidence must be uploaded to Firebase Storage before creating report. Please retry.");
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+      return;
     }
 
     // 2. FIRESTORE WRITE
@@ -579,6 +700,7 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
 
     const isManualSubmission = !aiAnalysis || (activeAnalysis.source as string) === "AI_UNAVAILABLE";
     const reportPayload = {
+      id: targetReportId,
       title: title.trim(),
       description: description.trim() || `Report on ${title}`,
       category: (activeAnalysis.issueType || category || "Pothole") as ReportCategory,
@@ -608,11 +730,11 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
         createFirestoreReport(reportPayload, {
           uid: currentUid,
           id: currentUid,
-          email: auth.currentUser?.email || user?.email || userProfile?.email || currentUserEmail,
-          name: auth.currentUser?.displayName || userProfile?.name || "Citizen Reporter"
+          email: currentAuthUser.email || user?.email || userProfile?.email || currentUserEmail,
+          name: currentAuthUser.displayName || userProfile?.name || "Citizen Reporter"
         }),
         12000,
-        "Firestore report creation timed out."
+        "Firestore report creation timed out after 12 seconds."
       );
 
       const actualReportId = created.id;
@@ -625,6 +747,10 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
         reportId: actualReportId,
         lastEvent: "FIRESTORE_WRITE_COMPLETED"
       }));
+
+      // Successfully saved to Firestore: clear idempotency cache
+      activeReportIdRef.current = null;
+      uploadedStorageUrlRef.current = null;
 
       setCreatedReport(created);
       setToastReport(created);
@@ -664,7 +790,7 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
         body: JSON.stringify({
           ...reportPayload,
           id: actualReportId,
-          reporterEmail: user?.email || userProfile?.email || currentUserEmail
+          reporterEmail: currentAuthUser.email || user?.email || userProfile?.email || currentUserEmail
         })
       }).catch(e => console.warn("Backend report sync note:", e));
 
@@ -672,7 +798,19 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
       console.error("[Diagnostics] FIRESTORE_WRITE_FAILED:", createErr);
       setDiagTrace(prev => ({ ...prev, submissionStatus: "ERROR", firestoreStatus: "ERROR", lastEvent: "FIRESTORE_WRITE_FAILED" }));
       setCurrentStep("REVIEW");
-      setFormError("Report could not be saved to database. Please retry.");
+
+      let readableError = "Report could not be saved to database. Please retry.";
+      if (createErr?.message) {
+        try {
+          const parsed = JSON.parse(createErr.message);
+          if (parsed?.error) {
+            readableError = `Firestore database write failed: ${parsed.error}`;
+          }
+        } catch {
+          readableError = `Firestore database write failed: ${createErr.message}`;
+        }
+      }
+      setFormError(readableError);
     } finally {
       submitLockRef.current = false;
       setIsSubmitting(false);
@@ -682,6 +820,8 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
   const handleReset = () => {
     submitLockRef.current = false;
     setIsSubmitting(false);
+    activeReportIdRef.current = null;
+    uploadedStorageUrlRef.current = null;
     setCurrentStep("FORM");
     setTitle("");
     setDescription("");
@@ -695,6 +835,15 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
     setFormError(null);
     setAiAnalysis(null);
     setCreatedReport(null);
+    setDiagTrace({
+      submissionStatus: "IDLE",
+      aiStatus: "PENDING",
+      storageStatus: "PENDING",
+      firestoreStatus: "PENDING",
+      notificationStatus: "PENDING",
+      reportId: null,
+      lastEvent: "IDLE"
+    });
   };
 
   // Helper for image URLs
@@ -924,7 +1073,7 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
               <span className="text-slate-400 block text-[9px]">SUBMISSION</span>
               <span className={`font-bold ${
                 diagTrace.submissionStatus === "SUCCESS" ? "text-emerald-400" :
-                diagTrace.submissionStatus === "SUBMITTING" ? "text-amber-400 animate-pulse" :
+                diagTrace.submissionStatus === "VALIDATING" ? "text-amber-400 animate-pulse" :
                 diagTrace.submissionStatus === "ERROR" ? "text-rose-400" : "text-slate-300"
               }`}>{diagTrace.submissionStatus}</span>
             </div>
@@ -932,24 +1081,22 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
               <span className="text-slate-400 block text-[9px]">AI VALIDATION</span>
               <span className={`font-bold ${
                 diagTrace.aiStatus === "SUCCESS" ? "text-emerald-400" :
-                diagTrace.aiStatus === "NO_HAZARD" ? "text-amber-400" :
-                diagTrace.aiStatus === "AI_UNAVAILABLE" ? "text-orange-400" : "text-slate-300"
+                diagTrace.aiStatus === "PENDING" ? "text-amber-400 animate-pulse" :
+                diagTrace.aiStatus === "AI_UNAVAILABLE" ? "text-orange-400" : "text-rose-400"
               }`}>{diagTrace.aiStatus}</span>
             </div>
             <div className="bg-slate-800/80 p-1.5 rounded">
               <span className="text-slate-400 block text-[9px]">STORAGE</span>
               <span className={`font-bold ${
                 diagTrace.storageStatus === "SUCCESS" ? "text-emerald-400" :
-                diagTrace.storageStatus === "PENDING" ? "text-amber-400 animate-pulse" :
-                diagTrace.storageStatus === "SKIPPED" ? "text-blue-400" : "text-rose-400"
+                diagTrace.storageStatus === "PENDING" ? "text-amber-400 animate-pulse" : "text-rose-400"
               }`}>{diagTrace.storageStatus}</span>
             </div>
             <div className="bg-slate-800/80 p-1.5 rounded">
               <span className="text-slate-400 block text-[9px]">FIRESTORE</span>
               <span className={`font-bold ${
                 diagTrace.firestoreStatus === "SUCCESS" ? "text-emerald-400" :
-                diagTrace.firestoreStatus === "PENDING" ? "text-amber-400 animate-pulse" :
-                diagTrace.firestoreStatus === "ERROR" ? "text-rose-400" : "text-slate-300"
+                diagTrace.firestoreStatus === "PENDING" ? "text-amber-400 animate-pulse" : "text-rose-400"
               }`}>{diagTrace.firestoreStatus}</span>
             </div>
             <div className="bg-slate-800/80 p-1.5 rounded">
@@ -957,7 +1104,7 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
               <span className={`font-bold ${
                 diagTrace.notificationStatus === "SUCCESS" ? "text-emerald-400" :
                 diagTrace.notificationStatus === "PENDING" ? "text-amber-400 animate-pulse" :
-                diagTrace.notificationStatus === "ERROR" ? "text-rose-400" : "text-slate-300"
+                diagTrace.notificationStatus === "SKIPPED" ? "text-blue-400" : "text-rose-400"
               }`}>{diagTrace.notificationStatus}</span>
             </div>
           </div>
@@ -1150,15 +1297,15 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
               <span className="text-slate-400 block text-[9px]">AI VALIDATION</span>
               <span className={`font-bold ${
                 diagTrace.aiStatus === "SUCCESS" ? "text-emerald-400" :
-                diagTrace.aiStatus === "NO_HAZARD" ? "text-amber-400" :
-                diagTrace.aiStatus === "AI_UNAVAILABLE" ? "text-orange-400" : "text-slate-300"
+                diagTrace.aiStatus === "PENDING" ? "text-amber-400 animate-pulse" :
+                diagTrace.aiStatus === "AI_UNAVAILABLE" ? "text-orange-400" : "text-rose-400"
               }`}>{diagTrace.aiStatus}</span>
             </div>
             <div className="bg-slate-800/80 p-1.5 rounded">
               <span className="text-slate-400 block text-[9px]">STORAGE</span>
               <span className={`font-bold ${
                 diagTrace.storageStatus === "SUCCESS" ? "text-emerald-400" :
-                diagTrace.storageStatus === "SKIPPED" ? "text-blue-400" : "text-rose-400"
+                diagTrace.storageStatus === "PENDING" ? "text-amber-400 animate-pulse" : "text-rose-400"
               }`}>{diagTrace.storageStatus}</span>
             </div>
             <div className="bg-slate-800/80 p-1.5 rounded">
@@ -1169,7 +1316,8 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
               <span className="text-slate-400 block text-[9px]">NOTIFICATION</span>
               <span className={`font-bold ${
                 diagTrace.notificationStatus === "SUCCESS" ? "text-emerald-400" :
-                diagTrace.notificationStatus === "PENDING" ? "text-amber-400 animate-pulse" : "text-slate-300"
+                diagTrace.notificationStatus === "PENDING" ? "text-amber-400 animate-pulse" :
+                diagTrace.notificationStatus === "SKIPPED" ? "text-blue-400" : "text-rose-400"
               }`}>{diagTrace.notificationStatus}</span>
             </div>
           </div>

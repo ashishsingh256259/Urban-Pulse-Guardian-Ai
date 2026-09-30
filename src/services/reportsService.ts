@@ -33,9 +33,19 @@ import { uploadReportEvidence } from "./storageService";
 
 export const reportConverter: FirestoreDataConverter<Report> = {
   toFirestore(report: Report): DocumentData {
+    // Safety check: ensure only remote download URLs or storage paths are stored, NEVER raw base64 or blob: strings
+    const safeImage = (report.image && (report.image.startsWith("http://") || report.image.startsWith("https://") || report.image.startsWith("gs://") || report.image.startsWith("reports/")))
+      ? report.image
+      : null;
+    const safeEvidenceUrl = (report.evidenceUrl && (report.evidenceUrl.startsWith("http://") || report.evidenceUrl.startsWith("https://") || report.evidenceUrl.startsWith("gs://") || report.evidenceUrl.startsWith("reports/")))
+      ? report.evidenceUrl
+      : safeImage;
+
     const docData: DocumentData = {
       id: report.id,
+      reportId: report.id,
       userId: report.userId || "",
+      reporterEmail: report.reporterEmail || "citizen@urbanpulse.gov",
       title: report.title || "Hazard Incident",
       description: report.description || "",
       category: report.category || "Pothole",
@@ -43,19 +53,20 @@ export const reportConverter: FirestoreDataConverter<Report> = {
       severity: Number(report.severity) || 50,
       riskLevel: report.riskLevel || "Medium",
       priority: report.priority || (report.severity >= 75 ? "High" : report.severity >= 45 ? "Medium" : "Low"),
-      confidence: Number(report.confidence) || 85,
+      confidence: Number(report.confidence) || 0,
+      aiConfidence: Number(report.confidence ?? report.aiAnalysis?.confidence ?? 0),
+      aiAssessment: report.aiAnalysis?.description || report.description || "Manual incident assessment",
       status: report.status || "Pending",
       location: report.location || "Urban Corridor",
       latitude: Number(report.latitude),
       longitude: Number(report.longitude),
-      image: report.image || report.evidenceUrl || null,
-      evidenceUrl: report.evidenceUrl || report.image || null,
-      reporterEmail: report.reporterEmail || "citizen@urbanpulse.gov",
+      image: safeImage,
+      evidenceUrl: safeEvidenceUrl,
       assignedTo: report.assignedTo || null,
       source: report.source || "MANUAL_REPORT",
       roadScanId: report.roadScanId || null,
       clusterCount: report.clusterCount ?? 1,
-      evidenceFrames: report.evidenceFrames || [],
+      evidenceFrames: (report.evidenceFrames || []).filter(f => typeof f === "string" && (f.startsWith("http://") || f.startsWith("https://"))),
       createdAt: report.createdAt || new Date().toISOString(),
       updatedAt: report.updatedAt || new Date().toISOString(),
       aiAnalysis: report.aiAnalysis || null
@@ -227,9 +238,15 @@ export async function createReport(
   // 4. Upload evidence image to Firebase Storage if available (and not already an HTTP/HTTPS URL)
   let evidenceUrl: string | null = null;
   if (input.image) {
-    if (typeof input.image === "string" && (input.image.startsWith("http://") || input.image.startsWith("https://"))) {
+    if (
+      typeof input.image === "string" &&
+      (input.image.startsWith("http://") || input.image.startsWith("https://")) &&
+      !input.image.startsWith("blob:") &&
+      !input.image.startsWith("data:")
+    ) {
       evidenceUrl = input.image;
     } else {
+      // Must upload File, Blob, or base64 data to Firebase Storage
       try {
         evidenceUrl = await uploadReportEvidence(
           userId,
@@ -237,11 +254,9 @@ export async function createReport(
           input.image,
           `evidence_${Date.now()}.jpg`
         );
-      } catch (uploadError) {
-        console.warn("Could not upload image to Storage, preserving direct reference:", uploadError);
-        if (typeof input.image === "string") {
-          evidenceUrl = input.image;
-        }
+      } catch (uploadError: any) {
+        console.error("[reportsService] Evidence Storage upload failed:", uploadError);
+        throw new Error(`Evidence image upload failed: ${uploadError?.message || "Storage error"}. Report creation stopped.`);
       }
     }
   }

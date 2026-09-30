@@ -1,0 +1,53 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Authentication & Identity Helpers
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Validate valid image payload and maximum size (10 MB limit)
+    function isValidImage() {
+      return request.resource == null || (
+        request.resource.contentType.matches('image/.*') &&
+        request.resource.size <= 10 * 1024 * 1024
+      );
+    }
+
+    // 1. Citizen Manual Report Evidence
+    // Path: reports/{userId}/{reportId}/evidence/{fileName}
+    // Authenticated users can upload evidence only to their own UID path.
+    // Any authenticated user (e.g. citizen, municipal officer, field crew) can view evidence.
+    match /reports/{userId}/{reportId}/evidence/{fileName} {
+      allow read: if isAuthenticated();
+      allow create, update: if isOwner(userId) && isValidImage();
+      allow delete: if isOwner(userId);
+    }
+
+    // 2. Road Scanner Evidence Frames
+    // Path: road-scanner/{userId}/{scanId}/evidence/{fileName}
+    match /road-scanner/{userId}/{scanId}/evidence/{fileName} {
+      allow read: if isAuthenticated();
+      allow create, update: if isOwner(userId) && isValidImage();
+      allow delete: if isOwner(userId);
+    }
+
+    // 3. Field Team Verification & Resolution Evidence
+    // Path: incidents/{incidentId}/field-evidence/{teamId}/{fileName}
+    match /incidents/{incidentId}/field-evidence/{teamId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidImage();
+      allow delete: if isAuthenticated();
+    }
+
+    // Default deny all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

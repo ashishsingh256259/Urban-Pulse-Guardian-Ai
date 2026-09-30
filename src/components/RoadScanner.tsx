@@ -603,9 +603,14 @@ export default function RoadScanner({
     const incidentId = `UPG-2026-${Date.now().toString().slice(-5)}`;
     const sourceLabel = source === "VEHICLE_DASHCAM" ? "Vehicle Dashcam" : source === "PHONE_CAMERA" ? "Phone Camera" : "Recorded Video";
     const readableLocation = `Corridor Point [${lat.toFixed(4)}, ${lng.toFixed(4)}]`;
-    const evidenceImage = await uploadRoadScanEvidenceFrame(
-      currentUserEmail || "scanner", sessionId, incidentId, track.hits, track.bestImage
-    );
+    let evidenceImage = "";
+    try {
+      evidenceImage = await uploadRoadScanEvidenceFrame(
+        currentUserEmail || "scanner", sessionId, incidentId, track.hits, track.bestImage
+      );
+    } catch (uploadErr) {
+      console.warn("Could not upload road scan frame to storage:", uploadErr);
+    }
 
     const newAutoIncident: AutoReportedIncident = {
       id: incidentId,

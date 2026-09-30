@@ -330,32 +330,33 @@ if (apiKey && apiKey !== "YOUR_GEMINI_API_KEY" && apiKey.trim().length > 0) {
   console.log("[Gemini AI] No valid GEMINI_API_KEY in environment. Heuristic fallback mode active.");
 }
 
-// Model Sanitization Helper to prevent obsolete model identifiers from being used
+// Model Sanitization Helper to prevent obsolete or invalid model identifiers from being used
 function sanitizeGeminiModelName(model?: string): string {
-  if (!model) return "gemini-3.8-flash";
+  if (!model) return "gemini-2.5-flash";
   const cleaned = model.trim().replace(/^models\//, "");
-  // Gemini 2.x Flash models are retired for new projects. This also protects
-  // deployments that still have GEMINI_MODEL or ROAD_SCANNER_GEMINI_MODEL set
-  // to an old value.
+  // If an invalid placeholder or UI label was passed, map to a valid Gemini production model
   if (
-    cleaned.includes("2.5") ||
-    cleaned.includes("2.0") ||
-    cleaned.includes("1.5") ||
+    cleaned.includes("3.8") ||
     cleaned.includes("1.0") ||
     cleaned === "gemini-flash" ||
     cleaned === "gemini-pro"
   ) {
-    return "gemini-3.8-flash";
+    return "gemini-2.5-flash";
   }
-  return cleaned || "gemini-3.8-flash";
+  return cleaned || "gemini-2.5-flash";
 }
 
 // Authoritative Road Scanner Gemini Model & Batching Configuration
-const ROAD_SCANNER_GEMINI_MODEL = sanitizeGeminiModelName(process.env.ROAD_SCANNER_GEMINI_MODEL || process.env.GEMINI_MODEL || "gemini-3.8-flash");
-// Do not add retired model names here. A 404 from an obsolete fallback prevents
-// the scanner from returning a useful result when a deployment still has an old
-// environment override.
-const GEMINI_VISION_MODELS = ["gemini-3.8-flash"];
+const ROAD_SCANNER_GEMINI_MODEL = sanitizeGeminiModelName(process.env.ROAD_SCANNER_GEMINI_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash");
+
+// Robust fallback cascade of supported multimodal models
+const GEMINI_VISION_MODELS = [
+  ROAD_SCANNER_GEMINI_MODEL,
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-2.5-flash-lite"
+];
 const GEMINI_FRAME_BATCH_SIZE = 4;
 const MAX_GEMINI_REQUESTS_PER_SCAN = 3;
 
@@ -397,19 +398,22 @@ function classifyGeminiError(err: any, fallbackModel: string = ROAD_SCANNER_GEMI
   const attemptedModel = err?.attemptedModel || fallbackModel;
 
   if (status === 401 || status === 403 || errMsg.includes("API_KEY") || errMsg.includes("UNAUTHENTICATED") || errMsg.includes("API key not valid") || errMsg.includes("PermissionDenied")) {
-    return { errorState: "GEMINI_AUTH_ERROR", httpStatus: status === 500 ? 401 : status, message: errMsg || "Gemini API configuration is missing or authentication failed.", attemptedModel };
+    return { errorState: "GEMINI_AUTH_ERROR", httpStatus: status === 500 ? 401 : status, message: "Gemini API key is invalid or lacks required permissions.", attemptedModel };
   }
-  if (status === 429 || errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("Quota exceeded")) {
+  if (status === 429 || errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("Quota exceeded") || errMsg.includes("quota")) {
     return { errorState: "GEMINI_RATE_LIMIT", httpStatus: 429, message: "Gemini API quota or rate limit exceeded. Please wait before scanning again.", attemptedModel };
   }
   if (status === 404 || errMsg.includes("NOT_FOUND") || errMsg.includes("not found")) {
-    return { errorState: "GEMINI_MODEL_ERROR", httpStatus: 404, message: errMsg || "Gemini model identifier invalid or unavailable.", attemptedModel };
+    return { errorState: "GEMINI_MODEL_ERROR", httpStatus: 404, message: "Requested Gemini model identifier is unavailable or not found.", attemptedModel };
+  }
+  if (status === 408 || errMsg.includes("timeout") || errMsg.includes("timed out") || errMsg.includes("DEADLINE_EXCEEDED")) {
+    return { errorState: "GEMINI_TIMEOUT", httpStatus: 504, message: "Gemini AI analysis timed out.", attemptedModel };
   }
   if (status === 400 || errMsg.includes("INVALID_ARGUMENT") || errMsg.includes("bad request")) {
-    return { errorState: "GEMINI_INVALID_REQUEST", httpStatus: 400, message: errMsg || "Invalid image payload or request parameters.", attemptedModel };
+    return { errorState: "GEMINI_INVALID_REQUEST", httpStatus: 400, message: "Invalid image payload or request parameters.", attemptedModel };
   }
 
-  return { errorState: "GEMINI_REQUEST_ERROR", httpStatus: status, message: errMsg || "Gemini vision API request failed.", attemptedModel };
+  return { errorState: "GEMINI_REQUEST_ERROR", httpStatus: status >= 400 && status < 600 ? status : 503, message: errMsg || "Gemini vision API request failed.", attemptedModel };
 }
 
 async function generateContentWithFallback(
@@ -1156,13 +1160,17 @@ Respond ONLY with valid JSON matching:
           });
         }
 
-        const { response } = await generateContentWithFallback(ai, {
-          contents: contentsPayload,
-          config: {
-            systemInstruction: systemPrompt,
-            responseMimeType: "application/json"
-          }
-        });
+        const { response, modelUsed } = await generateContentWithFallback(
+          ai,
+          {
+            contents: contentsPayload,
+            config: {
+              systemInstruction: systemPrompt,
+              responseMimeType: "application/json"
+            }
+          },
+          process.env.GEMINI_MODEL || ROAD_SCANNER_GEMINI_MODEL
+        );
 
         const rawText = response.text || "{}";
         const cleaned = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
@@ -1178,7 +1186,9 @@ Respond ONLY with valid JSON matching:
           return res.status(502).json({
             status: "unavailable",
             error: "Incomplete AI analysis",
-            message: "AI analysis output did not include required hazard metrics."
+            errorState: "PARSE_ERROR",
+            message: "AI analysis output did not include required hazard metrics.",
+            modelUsed
           });
         }
 
@@ -1195,22 +1205,30 @@ Respond ONLY with valid JSON matching:
             recommendedActions: isDetected && Array.isArray(parsed.recommendedActions) ? parsed.recommendedActions : [],
             reasoning: parsed.reasoning || (isDetected ? "Visual hazard detected by Gemini Vision." : "Visual inspection confirmed no road hazard present."),
             source: "AI_GEMINI"
-          }
+          },
+          modelUsed
         });
       } catch (geminiErr: any) {
-        console.warn("[Gemini AI] Image analysis error:", sanitizeErrorMessage(geminiErr?.message || geminiErr).slice(0, 100));
-        return res.status(503).json({
+        const classified = classifyGeminiError(geminiErr, process.env.GEMINI_MODEL || ROAD_SCANNER_GEMINI_MODEL);
+        console.warn(`[Gemini AI] Image analysis error: ${classified.errorState} - ${classified.message}`);
+        return res.status(classified.httpStatus).json({
           status: "unavailable",
           error: "Analysis unavailable",
-          message: "AI analysis service is currently unavailable. Please verify API key configuration."
+          errorState: classified.errorState,
+          message: classified.message,
+          modelUsed: classified.attemptedModel
         });
       }
     }
 
+    const hasKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "YOUR_GEMINI_API_KEY" && process.env.GEMINI_API_KEY.trim().length > 0);
     return res.status(503).json({
       status: "unavailable",
       error: "Analysis unavailable",
-      message: "AI analysis unavailable: Gemini Vision engine not initialized or API key missing."
+      errorState: hasKey ? "GEMINI_INITIALIZATION_ERROR" : "GEMINI_UNCONFIGURED",
+      message: hasKey 
+        ? "AI analysis service is temporarily unavailable." 
+        : "Gemini AI is not configured. GEMINI_API_KEY environment variable is required on the server."
     });
   } catch (err: any) {
     console.error("AI Image Analysis error:", err);
