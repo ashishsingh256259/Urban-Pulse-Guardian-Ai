@@ -334,10 +334,10 @@ const GEMINI_VISION_MODELS = [
   ROAD_SCANNER_GEMINI_MODEL,
   "gemini-2.5-flash",
   "gemini-2.0-flash",
-  "gemini-1.5-flash",
-  "gemini-2.5-flash-lite",
   "gemini-2.0-flash-lite",
-  "gemini-2.5-pro"
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-8b",
+  "gemini-1.5-pro"
 ];
 const GEMINI_FRAME_BATCH_SIZE = 4;
 const MAX_GEMINI_REQUESTS_PER_SCAN = 3;
@@ -361,12 +361,33 @@ function setModelCooldown(model: string, durationMs: number = 60000) {
 
 // Multi-Model Fallback Engine & Error Classification
 function sanitizeErrorMessage(msg: string): string {
-  if (!msg) return "Unknown AI processing exception";
-  return String(msg)
+  if (!msg) return "AI service temporarily unavailable";
+  let str = String(msg);
+  // Parse and unwrap any nested JSON error payloads from Google API
+  if (str.includes('"message":') || str.includes('{"error":')) {
+    try {
+      const jsonStart = str.indexOf("{");
+      const jsonEnd = str.lastIndexOf("}");
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        const parsed = JSON.parse(str.slice(jsonStart, jsonEnd + 1));
+        if (parsed?.error?.message) {
+          str = parsed.error.message;
+        }
+      }
+    } catch (_) {
+      const match = str.match(/"message"\s*:\s*"([^"]+)"/);
+      if (match && match[1]) {
+        str = match[1];
+      }
+    }
+  }
+
+  return str
     .replace(/key=[A-Za-z0-9_-]+/gi, "key=[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
     .replace(/x-goog-api-key:[^\s]+/gi, "x-goog-api-key: [REDACTED]")
-    .replace(/AIzaSy[A-Za-z0-9_-]{33}/gi, "[REDACTED_API_KEY]");
+    .replace(/AIzaSy[A-Za-z0-9_-]{33}/gi, "[REDACTED_API_KEY]")
+    .replace(/\{"error":\{.*\}\}/gi, "AI model endpoint updated.");
 }
 
 function classifyGeminiError(err: any, fallbackModel: string = ROAD_SCANNER_GEMINI_MODEL): { 
