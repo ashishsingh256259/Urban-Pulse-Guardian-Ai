@@ -1165,9 +1165,11 @@ export default function App() {
                       {activeSubTab === "emergency" && "Emergency Services Control Center"}
                       {activeSubTab === "field-operations" && "Field Operations & Maintenance Deck"}
                     </span>
-                    <span className="text-xs bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 px-2.5 py-0.5 rounded-full font-bold border border-[#DBEAFE] font-mono">
-                      Civic Network Active
-                    </span>
+                    {["citizen", "field_team"].includes(currentUser.role) && (
+                      <span className="text-xs bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 px-2.5 py-0.5 rounded-full font-bold border border-[#DBEAFE] font-mono">
+                        Civic Network Active
+                      </span>
+                    )}
                   </h1>
                 </div>
                 <p className="text-[12px] text-slate-500 dark:text-slate-300 mt-1.5 max-w-3xl leading-relaxed font-sans">
