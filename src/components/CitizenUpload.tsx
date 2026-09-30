@@ -13,6 +13,7 @@ import { validateCoordinates, createReport as createFirestoreReport } from "../s
 import { AIAnalysisResponse, validateAIAnalysisOutput } from "../services/aiAnalysisService";
 import { createNotification } from "../services/notificationsService";
 import CitizenSuccessToast, { getEstimatedResolutionTimeline } from "./CitizenSuccessToast";
+import { useLanguage } from "../i18n/LanguageContext";
 
 interface CitizenUploadProps {
   onReportCreated: (report: Report) => void;
@@ -88,6 +89,7 @@ async function compressImageFile(file: File, maxWidth = 1280, maxHeight = 1280, 
 
 export default function CitizenUpload({ onReportCreated, currentUserEmail, onViewReportDetails }: CitizenUploadProps) {
   const { user, userProfile } = useAuth();
+  const { t, tCategory, tStatus, tRiskLevel } = useLanguage();
   
   // Workflow step
   const [currentStep, setCurrentStep] = useState<WorkflowStep>("FORM");
@@ -1367,45 +1369,52 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
       <div className="flex items-center gap-2 mb-4 text-left">
         <Sparkles className="w-5 h-5 text-blue-600 shrink-0" />
         <div>
-          <h3 className="font-display font-semibold text-base text-slate-800 tracking-tight leading-5">Infrastructure Report Ingestion</h3>
-          <p className="text-[11px] text-gray-500">File a municipal incident report. Our server-side Gemini AI engine will evaluate structural safety hazards.</p>
+          <h3 className="font-display font-semibold text-base text-slate-800 dark:text-white tracking-tight leading-5">
+            {t("report.heading")}
+          </h3>
+          <p className="text-[11px] text-gray-500 dark:text-slate-400">
+            {t("report.subheading")}
+          </p>
         </div>
       </div>
 
       
 
       {/* Primary Ingestion Form */}
-      <form onSubmit={handleTriggerAnalysis} className="flex flex-col gap-4 text-xs text-slate-700 text-left">
+      <form onSubmit={handleTriggerAnalysis} className="flex flex-col gap-4 text-xs text-slate-700 dark:text-slate-300 text-left">
         
         {/* Title & category */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
-            <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Issue Overview Title</label>
+            <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+              {t("report.issueTitleLabel")}
+            </label>
             <input
               id="citizen-title-input"
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full bg-slate-50 border border-gray-200 px-3 py-2 rounded-lg text-slate-800 focus:bg-white dark:bg-slate-900 focus:border-blue-500 focus:outline-hidden"
-              placeholder="e.g. Broken drainage pipe flooding sidewalk"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 px-3 py-2 rounded-lg text-slate-800 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:border-blue-500 focus:outline-hidden"
+              placeholder={t("report.issueTitlePlaceholder")}
               required
             />
           </div>
 
           <div>
-            <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Incident Category</label>
+            <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+              {t("report.categoryLabel")}
+            </label>
             <select
               id="citizen-category-select"
               value={category}
               onChange={(e) => setCategory(e.target.value as ReportCategory)}
-              className="w-full bg-slate-50 border border-gray-200 px-3 py-2 rounded-lg text-slate-800 focus:bg-white dark:bg-slate-900 focus:border-blue-500 focus:outline-hidden font-semibold"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 px-3 py-2 rounded-lg text-slate-800 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:border-blue-500 focus:outline-hidden font-semibold"
             >
-              <option value="Pothole">🚧 Pothole / Asphalt Fracture</option>
-              <option value="Garbage Overflow">🚮 Garbage Overflow / Litter</option>
-              <option value="Broken Streetlight">💡 Broken Streetlight / Darkness</option>
-              <option value="Road Obstruction">🛑 Road Obstruction / Blockage</option>
-              <option value="Vandals / Graffiti">🎨 Vandals / Graffiti Facade</option>
-              <option value="Other">❓ Other Incidents</option>
+              <option value="Pothole">🚧 {t("category.pothole")}</option>
+              <option value="Garbage Overflow">🚮 {t("category.garbage")}</option>
+              <option value="Broken Streetlight">💡 {t("category.streetlight")}</option>
+              <option value="Road Obstruction">🛑 {t("category.roadHazards")}</option>
+              <option value="Other">❓ {t("category.other")}</option>
             </select>
           </div>
         </div>
@@ -1413,7 +1422,9 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
         {/* Location input fields */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[10px] font-bold uppercase text-gray-400 block">Street Address Location</label>
+            <label className="text-[10px] font-bold uppercase text-gray-400 block">
+              {t("report.locationLabel")}
+            </label>
             {selectedCoords && (
               <span className="text-[9px] font-mono font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-150 animate-fadeIn">
                 🛰️ GPS: {selectedCoords.lat.toFixed(5)}, {selectedCoords.lng.toFixed(5)}
@@ -1426,8 +1437,8 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
               type="text"
               value={location}
               onChange={(e) => setLocation(e.target.value)}
-              className="w-full bg-slate-50 border border-gray-200 pl-9 pr-24 py-2 rounded-lg text-slate-800 focus:bg-white dark:bg-slate-900 focus:border-blue-500 focus:outline-hidden text-xs font-medium"
-              placeholder="e.g. 482 Pine Street, Financial District"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 pl-9 pr-24 py-2 rounded-lg text-slate-800 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:border-blue-500 focus:outline-hidden text-xs font-medium"
+              placeholder={t("report.locationPlaceholder")}
               required
             />
             <MapPin className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
@@ -1441,17 +1452,17 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
                   ? "bg-slate-100 text-slate-400 cursor-not-allowed" 
                   : "bg-blue-50 hover:bg-blue-100 text-blue-700 active:scale-95 border border-blue-250/20"
               }`}
-              title="Detect my current location using GPS"
+              title={t("report.detectGps")}
             >
               {detectingLocation ? (
                 <>
                   <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
-                  <span>Finding...</span>
+                  <span>{t("report.detectingGps")}</span>
                 </>
               ) : (
                 <>
                   <Compass className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Locate</span>
+                  <span>{t("report.detectGps")}</span>
                 </>
               )}
             </button>
@@ -1467,14 +1478,16 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
 
         {/* Issue Description commentary */}
         <div>
-          <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Incident Description Notes</label>
+          <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+            {t("report.descriptionLabel")}
+          </label>
           <textarea
             id="citizen-description-textarea"
             rows={2}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full bg-slate-50 border border-gray-200 px-3 py-2 rounded-lg text-slate-800 focus:bg-white dark:bg-slate-900 focus:border-blue-500 focus:outline-hidden"
-            placeholder="Provide context on severity, hazard height, traffic levels, or other variables..."
+            className="w-full bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 px-3 py-2 rounded-lg text-slate-800 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:border-blue-500 focus:outline-hidden"
+            placeholder={t("report.descriptionPlaceholder")}
           />
         </div>
 
@@ -1491,7 +1504,9 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
 
         {/* Evidence File Uploader */}
         <div>
-          <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Visual Evidence File Upload</label>
+          <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+            {t("report.photoEvidenceLabel")}
+          </label>
           <div
             onDragEnter={handleDrag}
             onDragOver={handleDrag}
@@ -1744,12 +1759,12 @@ export default function CitizenUpload({ onReportCreated, currentUserEmail, onVie
           {currentStep === "ANALYZING" ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Guardian AI Analyzing Visual Structures...</span>
+              <span>{t("report.submittingButton")}</span>
             </>
           ) : (
             <>
               <Sparkles className="w-4 h-4 shrink-0" />
-              <span>Submit for AI Analysis & Review</span>
+              <span>{t("report.submitButton")}</span>
             </>
           )}
         </button>

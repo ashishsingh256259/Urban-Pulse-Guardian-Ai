@@ -387,6 +387,7 @@ export interface RawRoadDetection {
   estimatedLength?: string;
   estimatedArea?: string;
   sizeConfidence?: "High" | "Medium" | "Low" | "Unavailable";
+  sizeTier?: "Small" | "Medium" | "Large";
 }
 
 export interface RoadScanCandidate {
@@ -413,6 +414,7 @@ export interface RoadScanCandidate {
   estimatedLength?: string;
   estimatedArea?: string;
   sizeConfidence?: "High" | "Medium" | "Low" | "Unavailable";
+  sizeTier?: "Small" | "Medium" | "Large";
   lastSeen?: string;
   description: string;
   recommendedActions: string[];

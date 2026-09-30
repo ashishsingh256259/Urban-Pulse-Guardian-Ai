@@ -21,6 +21,7 @@ import { createReport } from "../services/reportsService";
 import { createNotification } from "../services/notificationsService";
 import { useAuth } from "../context/AuthContext";
 import { auth } from "../lib/firebase";
+import { useLanguage } from "../i18n/LanguageContext";
 
 interface FooterEmergencyButtonProps {
   currentUser: User | null;
@@ -34,6 +35,7 @@ export default function FooterEmergencyButton({
   onOpenReportDetails
 }: FooterEmergencyButtonProps) {
   const { user: authUser, loading: authLoading } = useAuth();
+  const { t } = useLanguage();
   const [modalOpen, setModalOpen] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -290,9 +292,9 @@ export default function FooterEmergencyButton({
           </span>
 
           <AlertOctagon className="w-4 h-4 text-white group-hover:rotate-12 transition-transform duration-200" />
-          <span className="font-display font-extrabold tracking-tight">Quick-Action SOS</span>
+          <span className="font-display font-extrabold tracking-tight">⚠️ {t("sos.instantBeacon")}</span>
           <span className="hidden sm:inline-block px-1.5 py-0.5 bg-rose-950/80 rounded text-[9px] font-mono text-rose-200 border border-rose-700/50">
-            GPS Locked
+            {t("report.gpsDetected")}
           </span>
         </button>
       </div>

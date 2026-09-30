@@ -28,6 +28,7 @@ import {
   ArrowRight
 } from "lucide-react";
 import { User, UserRole, FieldTeamMeta, AuditLog } from "../types";
+import LanguageSwitcher from "./LanguageSwitcher";
 import {
   getAdminUsers,
   toggleUserStatus,
@@ -1327,6 +1328,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Tune automated hazard deduplication radii, AI confidence threshold, and notifications.
             </p>
+          </div>
+
+          {/* APPLICATION LANGUAGE PREFERENCE */}
+          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl space-y-2">
+            <div>
+              <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                Application Language / भाषा / ਭਾਸ਼ਾ
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Choose the primary display language. The selected language applies globally across all Citizen and Administration modules.
+              </p>
+            </div>
+            <LanguageSwitcher variant="settings" />
           </div>
 
           <div className="space-y-4 max-w-xl text-xs">

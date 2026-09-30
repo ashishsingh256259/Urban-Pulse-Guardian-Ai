@@ -475,6 +475,13 @@ export default function SafeRouteNav({ reports }: SafeRouteNavProps) {
           </div>
 
           <div className="space-y-2.5">
+            {computedRoutes.length === 0 && statusMsg !== "IDLE" && !calculating && (
+              <div className="p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-center">
+                <AlertTriangle className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300">No route data available</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Safe route unavailable for the given locations. Please try a different origin or destination.</p>
+              </div>
+            )}
             {computedRoutes.map((rt) => {
               const isSelected = rt.id === selectedRouteId;
               const isRecommended = rt.id === "safe_route_0";
