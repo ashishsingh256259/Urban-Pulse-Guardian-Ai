@@ -379,9 +379,9 @@ export default function RoadScanner({
 
     // Standard road lane geometry approximation (lane ~3.5m wide, bounding box normalized 0..1)
     const wM = Number(((loc.width / 0.45) * 2.2).toFixed(1));
-    const clampedW = Math.max(0.4, Math.min(3.2, wM));
+    const clampedW = Math.max(0.2, Math.min(3.5, wM));
     const lM = Number(((loc.height / 0.35) * 1.8).toFixed(1));
-    const clampedL = Math.max(0.3, Math.min(3.0, lM));
+    const clampedL = Math.max(0.1, Math.min(3.0, lM));
     const aM = Number((clampedW * clampedL).toFixed(2));
 
     const sizeConf: "High" | "Medium" | "Low" = confidence >= 85 ? "Medium" : "Low";
@@ -947,46 +947,145 @@ export default function RoadScanner({
 
           const roadBaseline = baselineCount > 0 ? baselineSum / baselineCount : 128;
 
-          // Find candidate pothole cells with distinct localized contrast/cavity depression
-          let minX = gridCols, maxX = -1, minY = gridRows, maxY = -1;
-          let cavityCells = 0;
-          let maxContrast = 0;
-
-          for (let r = 1; r < gridRows - 1; r++) {
-            for (let c = 1; c < gridCols - 1; c++) {
+          // Identify individual cavity cells across the roadway zone
+          const isCavity: boolean[][] = [];
+          const cellDeltas: number[][] = [];
+          for (let r = 0; r < gridRows; r++) {
+            isCavity[r] = [];
+            cellDeltas[r] = [];
+            for (let c = 0; c < gridCols; c++) {
+              if (r === 0 || r === gridRows - 1 || c === 0 || c === gridCols - 1) {
+                isCavity[r][c] = false;
+                cellDeltas[r][c] = 0;
+                continue;
+              }
               const val = cellLum[r][c];
               const neighborAvg = (cellLum[r - 1][c] + cellLum[r + 1][c] + cellLum[r][c - 1] + cellLum[r][c + 1]) / 4;
               const localDelta = Math.abs(val - neighborAvg);
               const baselineDelta = Math.abs(val - roadBaseline);
 
-              // Significant localized contrast drop (dark asphalt crater or reflective water cavity)
-              if (localDelta >= 18 || (val < roadBaseline * 0.70 && baselineDelta >= 22)) {
-                cavityCells++;
-                maxContrast = Math.max(maxContrast, localDelta);
-                minX = Math.min(minX, c);
-                maxX = Math.max(maxX, c);
-                minY = Math.min(minY, r);
-                maxY = Math.max(maxY, r);
+              // Cavity criteria: localized contrast drop or deep dark asphalt crater / puddle
+              const cavity = (localDelta >= 16) || (val < roadBaseline * 0.72 && baselineDelta >= 20);
+              isCavity[r][c] = cavity;
+              cellDeltas[r][c] = localDelta;
+            }
+          }
+
+          // Group contiguous cavity cells into individual pothole clusters (Connected Components)
+          const visited: boolean[][] = Array.from({ length: gridRows }, () => Array(gridCols).fill(false));
+          interface PotholeCluster {
+            minR: number;
+            maxR: number;
+            minC: number;
+            maxC: number;
+            maxDelta: number;
+            area: number;
+          }
+          const clusters: PotholeCluster[] = [];
+
+          for (let r = 1; r < gridRows - 1; r++) {
+            for (let c = 1; c < gridCols - 1; c++) {
+              if (isCavity[r][c] && !visited[r][c]) {
+                const queue: Array<[number, number]> = [[r, c]];
+                visited[r][c] = true;
+                let cMin = c, cMax = c, rMin = r, rMax = r;
+                let clusterMaxDelta = cellDeltas[r][c];
+                let clusterArea = 0;
+
+                while (queue.length > 0) {
+                  const [currR, currC] = queue.shift()!;
+                  clusterArea++;
+                  const d = cellDeltas[currR][currC];
+                  cMin = Math.min(cMin, currC);
+                  cMax = Math.max(cMax, currC);
+                  rMin = Math.min(rMin, currR);
+                  rMax = Math.max(rMax, currR);
+                  clusterMaxDelta = Math.max(clusterMaxDelta, d);
+
+                  const neighbors: Array<[number, number]> = [
+                    [currR - 1, currC],
+                    [currR + 1, currC],
+                    [currR, currC - 1],
+                    [currR, currC + 1]
+                  ];
+                  for (const [nr, nc] of neighbors) {
+                    if (nr >= 1 && nr < gridRows - 1 && nc >= 1 && nc < gridCols - 1) {
+                      if (isCavity[nr][nc] && !visited[nr][nc]) {
+                        visited[nr][nc] = true;
+                        queue.push([nr, nc]);
+                      }
+                    }
+                  }
+                }
+
+                clusters.push({
+                  minR: rMin,
+                  maxR: rMax,
+                  minC: cMin,
+                  maxC: cMax,
+                  maxDelta: clusterMaxDelta,
+                  area: clusterArea
+                });
               }
             }
           }
 
-          // Must have genuine localized cavity cluster (2 to 40% of grid). If 0 or >40% (large shadow), not a pothole!
-          const totalCells = gridCols * gridRows;
-          if (cavityCells < 2 || cavityCells > totalCells * 0.40 || maxX < minX || maxY < minY) {
-            return resolve(null);
+          // Filter out noise (<2 cells) or road-wide illumination shifts (>35% of total grid cells)
+          const validClusters = clusters.filter(cl => cl.area >= 2 && cl.area <= (gridCols * gridRows) * 0.35);
+          if (validClusters.length === 0) {
+            return resolve(null); // Clean road surface without potholes
           }
 
-          // Compute exact normalized bounding box around the real detected pothole
-          const padX = 0.3;
-          const padY = 0.3;
-          const boxX = Math.max(0.05, Math.min(0.85, ((minX - padX) * cellW) / w));
-          const boxY = Math.max(0.35, Math.min(0.85, (roadStartY + (minY - padY) * cellH) / h));
-          const boxW = Math.max(0.14, Math.min(0.68, ((maxX - minX + 1 + padX * 2) * cellW) / w));
-          const boxH = Math.max(0.10, Math.min(0.48, ((maxY - minY + 1 + padY * 2) * cellH) / h));
+          // Pick the primary pothole cluster (by localized contrast intensity and area)
+          validClusters.sort((a, b) => (b.maxDelta * 1.5 + b.area * 3) - (a.maxDelta * 1.5 + a.area * 3));
+          const primary = validClusters[0];
 
-          const confidence = Math.min(94, Math.max(72, Math.round(70 + maxContrast * 1.1 + cavityCells * 1.2)));
-          const severityScore = Math.min(95, Math.max(68, Math.round(68 + maxContrast * 1.3)));
+          // Compute exact pixel bounding box around the pothole cavity
+          const pxStart = Math.max(0, primary.minC * cellW - 2);
+          const pxEnd = Math.min(w, (primary.maxC + 1) * cellW + 2);
+          const pyStart = Math.max(roadStartY, roadStartY + primary.minR * cellH - 2);
+          const pyEnd = Math.min(h, roadStartY + (primary.maxR + 1) * cellH + 2);
+
+          let pMinX = pxEnd, pMaxX = pxStart, pMinY = pyEnd, pMaxY = pyStart;
+          let tightPixels = 0;
+
+          for (let y = pyStart; y < pyEnd; y++) {
+            for (let x = pxStart; x < pxEnd; x++) {
+              const idx = (y * w + x) * 4;
+              const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+              if (Math.abs(lum - roadBaseline) >= 16 || lum < roadBaseline * 0.72) {
+                tightPixels++;
+                if (x < pMinX) pMinX = x;
+                if (x > pMaxX) pMaxX = x;
+                if (y < pMinY) pMinY = y;
+                if (y > pMaxY) pMaxY = y;
+              }
+            }
+          }
+
+          // Fallback to cell bounds if tight pixel search is sparse
+          const finalMinX = (tightPixels >= 5 && pMaxX > pMinX) ? pMinX : primary.minC * cellW;
+          const finalMaxX = (tightPixels >= 5 && pMaxX > pMinX) ? pMaxX : (primary.maxC + 1) * cellW;
+          const finalMinY = (tightPixels >= 5 && pMaxY > pMinY) ? pMinY : roadStartY + primary.minR * cellH;
+          const finalMaxY = (tightPixels >= 5 && pMaxY > pMinY) ? pMaxY : roadStartY + (primary.maxR + 1) * cellH;
+
+          // Normalized coordinates with subtle proportional margin for visual framing
+          const rawW = finalMaxX - finalMinX;
+          const rawH = finalMaxY - finalMinY;
+          const marginX = Math.max(2, rawW * 0.08);
+          const marginY = Math.max(2, rawH * 0.08);
+
+          const boxX = Math.max(0.02, Math.min(0.92, (finalMinX - marginX) / w));
+          const boxY = Math.max(0.35, Math.min(0.92, (finalMinY - marginY) / h));
+          // Truly dynamic size:
+          // Small pothole (e.g. 10px / 160) -> boxW = ~0.08 (8% width)
+          // Medium pothole (e.g. 28px / 160) -> boxW = ~0.20 (20% width)
+          // Large crater (e.g. 60px / 160) -> boxW = ~0.44 (44% width)
+          const boxW = Math.max(0.06, Math.min(0.75, (rawW + marginX * 2) / w));
+          const boxH = Math.max(0.05, Math.min(0.55, (rawH + marginY * 2) / h));
+
+          const confidence = Math.min(94, Math.max(72, Math.round(70 + primary.maxDelta * 1.1 + primary.area * 1.2)));
+          const severityScore = Math.min(95, Math.max(68, Math.round(68 + primary.maxDelta * 1.3)));
           const bbox: BoundingBox = {
             x: Number(boxX.toFixed(2)),
             y: Number(boxY.toFixed(2)),
@@ -1589,6 +1688,7 @@ export default function RoadScanner({
 
     const sessionId = activeSessionIdRef.current;
     const finalClustered = clusterDetections(liveDetections, sessionId, 5);
+    const allCandidates = candidates.length > 0 ? candidates : finalClustered;
 
     // Calculate real distance traveled
     let totalDistance = 0;
@@ -1602,6 +1702,58 @@ export default function RoadScanner({
     }
     totalDistance = Math.round(totalDistance);
 
+    // AUTO-SUBMIT: Ensure all candidates/detected road hazards are submitted to the backend without manual prompt
+    for (const cand of allCandidates) {
+      if (cand.submissionState === "SUBMITTED" && cand.submittedReportId) {
+        continue; // Already submitted during live stream
+      }
+      try {
+        const reportCategory: ReportCategory = cand.category.includes("Pothole") ? "Pothole" : "Road Obstruction";
+        const res = await fetch(getApiUrl("/api/reports"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: cand.id,
+            title: `Road Hazard: ${cand.hazardType || cand.category} (${cand.severity}% Sev)`,
+            description: cand.description || `Automatic road scanner detection. Verified at ${cand.location}.`,
+            category: reportCategory,
+            severity: cand.severity,
+            riskLevel: cand.riskLevel,
+            priority: cand.priority,
+            confidence: cand.confidence,
+            location: cand.location,
+            latitude: cand.latitude,
+            longitude: cand.longitude,
+            image: cand.primaryImage,
+            evidenceFrames: cand.evidenceFrames,
+            source: "ROAD_SCANNER",
+            sourceCamera: cand.sourceCamera,
+            boundingBox: cand.boundingBox,
+            estimatedWidth: cand.estimatedWidth,
+            estimatedLength: cand.estimatedLength,
+            estimatedArea: cand.estimatedArea,
+            sizeConfidence: cand.sizeConfidence,
+            observationsCount: cand.observationsCount || 1,
+            workflowState: "MUNICIPAL QUEUED",
+            autoReported: true,
+            reporterEmail: currentUserEmail || "scanner.auto@urbanpulse.ai"
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.report) {
+            cand.submissionState = "SUBMITTED";
+            cand.submittedReportId = data.report.id;
+            if (onIncidentAutoReported) {
+              onIncidentAutoReported(data.report);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Auto-submit candidate error:", e);
+      }
+    }
+
     const session: RoadScanSession = {
       id: sessionId,
       userId: currentUserEmail,
@@ -1609,10 +1761,10 @@ export default function RoadScanner({
       endTime: Date.now(),
       totalDistanceMeters: totalDistance,
       totalFramesAnalyzed: analyzedFrameCount,
-      totalDetections: candidates.length,
-      candidates: candidates.length > 0 ? candidates : finalClustered,
+      totalDetections: allCandidates.length,
+      candidates: allCandidates,
       routePath: gpsTrack,
-      status: "REVIEW_READY"
+      status: "COMPLETED"
     };
 
     setRecordingState("COMPLETE");
@@ -2194,7 +2346,7 @@ export default function RoadScanner({
                     className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer"
                   >
                     <Square className="w-4 h-4 fill-current" />
-                    <span>Finish Scan & Review ({candidates.length})</span>
+                    <span>End Scan & Submit ({candidates.length})</span>
                   </button>
                 </div>
               )}

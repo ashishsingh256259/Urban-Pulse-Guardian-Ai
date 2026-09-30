@@ -1246,8 +1246,9 @@ export default function App() {
                     setReports((prev) => [newRep, ...prev]);
                   }}
                   onCandidatesReady={(session) => {
-                    setActiveScanSession(session);
-                    setActiveSubTab("candidate-review");
+                    setActiveScanSession(null);
+                    syncOperationalDatasets(currentUser.email, currentUser.role);
+                    setActiveSubTab("my-reports");
                   }}
                   onSwitchToManual={() => {
                     setActiveSubTab("infrastructure");
@@ -1262,9 +1263,8 @@ export default function App() {
                 <RoadAiCandidateReview
                   session={activeScanSession}
                   currentUserEmail={currentUser.email}
-                  onReportsSubmitted={(submittedReports, awardedPoints) => {
+                  onReportsSubmitted={(submittedReports) => {
                     setReports((prev) => [...submittedReports, ...prev]);
-                    setUserCivicPoints((pts) => pts + awardedPoints);
                     setActiveScanSession(null);
                     syncOperationalDatasets(currentUser.email, currentUser.role);
                     setActiveSubTab("my-reports");

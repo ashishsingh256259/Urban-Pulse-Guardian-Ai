@@ -1523,19 +1523,24 @@ export function analyzeRoadFramesWithCV(
       continue; // Clean road surface without potholes
     }
 
-    // Dynamic localization based on cavity gradient distribution in the roadway zone
+    // Dynamic localization & scaling based on cavity gradient distribution in the roadway zone
+    const normGradient = Math.min(1, Math.max(0, (avgGradient - 16) / 36));
+    const normStdDev = Math.min(1, Math.max(0, (stdDev - 18) / 40));
+    const sizeScale = (normGradient * 0.65 + normStdDev * 0.35);
+
+    // Dynamic width & height: small potholes down to ~0.08, large craters up to ~0.50
+    const width = Number(Math.max(0.08, Math.min(0.55, 0.08 + sizeScale * 0.38)).toFixed(2));
+    const height = Number(Math.max(0.06, Math.min(0.42, 0.06 + sizeScale * 0.30)).toFixed(2));
     const seed = ((avgGradient * 17 + stdDev) % 100) / 100;
-    const width = Number((0.24 + (seed * 0.12)).toFixed(2));
-    const height = Number((0.16 + (seed * 0.08)).toFixed(2));
-    const x = Number(Math.max(0.20, Math.min(0.60, 0.35 + ((seed - 0.5) * 0.16))).toFixed(2));
-    const y = Number(Math.max(0.45, Math.min(0.68, 0.52 + ((seed - 0.5) * 0.10))).toFixed(2));
+    const x = Number(Math.max(0.08, Math.min(0.85 - width, 0.32 + ((seed - 0.5) * 0.22))).toFixed(2));
+    const y = Number(Math.max(0.38, Math.min(0.85 - height, 0.48 + ((seed - 0.5) * 0.16))).toFixed(2));
 
     const confidence = Math.min(94, Math.max(72, Math.round(70 + avgGradient * 0.8)));
     const severityScore = Math.min(95, Math.max(68, Math.round(66 + stdDev * 0.6)));
     const severityLabel: "Low" | "Medium" | "High" = severityScore >= 75 ? "High" : "Medium";
 
-    const estW = Number(((width / 0.45) * 2.2).toFixed(1));
-    const estL = Number(((height / 0.35) * 1.8).toFixed(1));
+    const estW = Number(Math.max(0.2, (width * 2.8)).toFixed(1));
+    const estL = Number(Math.max(0.1, (height * 2.4)).toFixed(1));
     const estA = Number((estW * estL).toFixed(2));
 
     detections.push({

@@ -205,8 +205,7 @@ export default function RoadAiCandidateReview({
 
     if (newlyCreatedReports.length > 0) {
       setSubmittedReportsState((prev) => [...prev, ...newlyCreatedReports]);
-      const awardedPoints = newlyCreatedReports.length * 50;
-      onReportsSubmitted(newlyCreatedReports, awardedPoints);
+      onReportsSubmitted(newlyCreatedReports, 0);
     }
 
     if (failureCount > 0) {
@@ -238,7 +237,7 @@ export default function RoadAiCandidateReview({
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Haversine clustering grouped continuous video frames into distinct physical road hazards. Select candidates to publish to Firestore.
+                Haversine clustering grouped continuous video frames into distinct physical road hazards.
               </p>
             </div>
           </div>
@@ -268,12 +267,12 @@ export default function RoadAiCandidateReview({
             {isSubmitting ? (
               <>
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>Writing to Firestore ({submissionProgress.current}/{submissionProgress.total})...</span>
+                <span>Saving Reports ({submissionProgress.current}/{submissionProgress.total})...</span>
               </>
             ) : isAllSubmitted ? (
               <>
                 <CheckCircle2 className="w-4 h-4" />
-                <span>All {candidates.length} Reports Logged to Firestore</span>
+                <span>All {candidates.length} Reports Logged Successfully</span>
               </>
             ) : failedCount > 0 && selectedCount === 0 ? (
               <>
@@ -283,7 +282,7 @@ export default function RoadAiCandidateReview({
             ) : (
               <>
                 <Shield className="w-4 h-4" />
-                <span>Submit {selectedCount} Selected to Firestore (+{selectedCount * 50} pts)</span>
+                <span>Submit {selectedCount} Selected</span>
               </>
             )}
           </button>
@@ -313,10 +312,10 @@ export default function RoadAiCandidateReview({
             <Award className="w-6 h-6 text-emerald-400 shrink-0" />
             <div>
               <p className="text-sm font-bold">
-                {submittedCount} Road Hazard {submittedCount > 1 ? "Reports" : "Report"} Successfully Synchronized with Firestore!
+                {submittedCount} Road Hazard {submittedCount > 1 ? "Reports" : "Report"} Successfully Synchronized!
               </p>
               <p className="text-xs text-emerald-400">
-                Source tagged as <span className="font-mono font-bold">ROAD_SCANNER</span> • +{submittedCount * 50} Civic Points awarded.
+                Source tagged as <span className="font-mono font-bold">ROAD_SCANNER</span> • Recorded into municipal intelligence pipeline.
               </p>
             </div>
           </div>
