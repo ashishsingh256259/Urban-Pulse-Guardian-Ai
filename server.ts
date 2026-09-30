@@ -1713,29 +1713,8 @@ Respond strictly with valid JSON:
       console.warn(`[Road Scanner AI] Gemini batch analysis error: ${geminiErrorClassified.errorState} - ${geminiErrorClassified.message}`);
     }
 
-    // STRICT REQUIREMENT #2 & #7: NEVER fabricate a detection when AI analysis fails!
+    // If Gemini vision model failed or rate-limited, return error status so client runs its true pixel-level canvas detector
     if (!result) {
-      const cvDetections = analyzeRoadFramesWithCV(validFrames);
-      if (cvDetections && cvDetections.length > 0) {
-        console.log(`[Road Scanner AI] Gemini unavailable (503/429) -> Activated Adaptive CV Pothole Detector. Found ${cvDetections.length} hazard(s).`);
-        roadFrameAnalysisCache.set(primarySig, {
-          results: cvDetections,
-          modelUsed: "UrbanPulse Adaptive CV Vision Engine (Failover)",
-          timestamp: Date.now()
-        });
-
-        return res.json({
-          detected: true,
-          detection: cvDetections[0],
-          detections: cvDetections,
-          rawDetectionsCount: cvDetections.length,
-          validDetectionsCount: cvDetections.length,
-          aiStatus: "SUCCESS",
-          modelUsed: "UrbanPulse Adaptive CV Vision Engine (Failover)",
-          batchSize: validFrames.length,
-          message: `Detected ${cvDetections.length} road hazard(s) via adaptive vision engine (Gemini high-demand failover).`
-        });
-      }
 
       const status = geminiErrorClassified?.httpStatus || 503;
       const isRateLimit = geminiErrorClassified?.errorState === "GEMINI_RATE_LIMIT" || status === 429;

@@ -57,6 +57,7 @@ interface TemporalTrack {
   estimatedLength: string | null;
   estimatedArea: string | null;
   sizeConfidence: "High" | "Medium" | "Low" | "Unavailable";
+  sizeTier?: "Small" | "Medium" | "Large";
   gps: GPSCoordinate;
   confirmed: boolean;
   reportedIncidentId: string | null;
@@ -125,6 +126,8 @@ export default function RoadScanner({
     category: string;
     confidence: number;
     severity: number;
+    sizeTier: PotholeSizeTier;
+    frameColor: PotholeFrameColor;
     estimatedSizeText?: string;
   } | null>(null);
 
@@ -353,6 +356,72 @@ export default function RoadScanner({
 
     return () => clearInterval(interval);
   }, [aiServiceStatus]);
+
+  // ==========================================
+  // POTHOLE SIZE TIER & DYNAMIC COLOR SCALING
+  // ==========================================
+  // Requirement: Detect size as Small, Medium, or Large.
+  // Generate frame color from Light Orange to Dark Red.
+  type PotholeSizeTier = "Small" | "Medium" | "Large";
+
+  interface PotholeFrameColor {
+    border: string;
+    bg: string;
+    shadow: string;
+    badgeBg: string;
+    icon: string;
+  }
+
+  const getPotholeSizeTierAndColor = (
+    widthMeters: number, 
+    boxWidth: number, 
+    boxHeight: number
+  ): { sizeTier: PotholeSizeTier; frameColor: PotholeFrameColor } => {
+    const area = boxWidth * boxHeight;
+    
+    // SMALL POTHOLE: <= 0.45m width or small screen footprint (<= 15% width or <= 0.028 area)
+    // Frame Color: Light Orange
+    if (widthMeters <= 0.45 || (boxWidth <= 0.15 && area <= 0.028)) {
+      return {
+        sizeTier: "Small",
+        frameColor: {
+          border: "#fb923c", // Light Orange (Tailwind orange-400)
+          bg: "rgba(251, 146, 60, 0.22)",
+          shadow: "0 0 18px rgba(251, 146, 60, 0.65)",
+          badgeBg: "#ea580c",
+          icon: "🟠"
+        }
+      };
+    }
+    
+    // MEDIUM POTHOLE: 0.45m - 0.85m width or moderate footprint (0.15 - 0.28 width)
+    // Frame Color: Deep/Medium Orange
+    if (widthMeters <= 0.85 && boxWidth <= 0.28 && area <= 0.075) {
+      return {
+        sizeTier: "Medium",
+        frameColor: {
+          border: "#f97316", // Medium Orange (Tailwind orange-500)
+          bg: "rgba(249, 115, 22, 0.25)",
+          shadow: "0 0 20px rgba(249, 115, 22, 0.70)",
+          badgeBg: "#c2410c",
+          icon: "🟠"
+        }
+      };
+    }
+
+    // LARGE POTHOLE / CRATER: > 0.85m crater or wide footprint (> 28% width or > 0.075 area)
+    // Frame Color: Dark Red
+    return {
+      sizeTier: "Large",
+      frameColor: {
+        border: "#dc2626", // Dark Red (Tailwind red-600)
+        bg: "rgba(220, 38, 38, 0.28)",
+        shadow: "0 0 24px rgba(220, 38, 38, 0.80)",
+        badgeBg: "#991b1b",
+        icon: "🔴"
+      }
+    };
+  };
 
   // ==========================================
   // PHYSICAL DIMENSION ESTIMATION
@@ -710,6 +779,7 @@ export default function RoadScanner({
       estimatedLength: track.estimatedLength,
       estimatedArea: track.estimatedArea,
       sizeConfidence: track.sizeConfidence,
+      sizeTier: track.sizeTier || "Medium",
       description: `Auto-reported ${track.hazardType} verified by dashcam vision pipeline across ${track.hits} frames.`,
       recommendedActions: [
         "Immediate emergency cold-mix asphalt patch within 12 hours",
@@ -906,8 +976,9 @@ export default function RoadScanner({
           const roadRatio = totalSampled > 0 ? roadColorPixels / totalSampled : 0;
           const saturatedRatio = totalSampled > 0 ? brightSaturatedPixels / totalSampled : 0;
 
-          // Reject if face detected (>10% skin tones) or non-road scene (<25% road-like pixels or >35% saturated colors)
-          if (skinRatio > 0.10 || roadRatio < 0.25 || saturatedRatio > 0.35) {
+          // STRICT SCENE REJECTION:
+          // Reject faces (>4% skin tones), colorful indoor rooms (>22% saturated colors), or non-road scenes (<45% road-like pixels)
+          if (skinRatio > 0.04 || roadRatio < 0.45 || saturatedRatio > 0.22) {
             return resolve(null);
           }
 
@@ -919,6 +990,7 @@ export default function RoadScanner({
           const cellH = Math.floor((h - roadStartY) / gridRows);
 
           let baselineSum = 0;
+          let baselineSumSq = 0;
           let baselineCount = 0;
           const cellLum: number[][] = [];
 
@@ -941,13 +1013,22 @@ export default function RoadScanner({
               const avg = count > 0 ? sum / count : 128;
               cellLum[r][c] = avg;
               baselineSum += avg;
+              baselineSumSq += avg * avg;
               baselineCount++;
             }
           }
 
           const roadBaseline = baselineCount > 0 ? baselineSum / baselineCount : 128;
+          const roadVariance = baselineCount > 0 ? (baselineSumSq / baselineCount) - (roadBaseline * roadBaseline) : 0;
+          const roadStdDev = Math.sqrt(Math.max(0, roadVariance));
+
+          // If roadway is completely uniform (blank painted wall or solid surface, stdDev < 8), no road texture exists: reject
+          if (roadStdDev < 8) {
+            return resolve(null);
+          }
 
           // Identify individual cavity cells across the roadway zone
+          // Clean road asphalt has localDelta < 14 everywhere. A genuine cavity or crater has high localized contrast drop (>= 20)
           const isCavity: boolean[][] = [];
           const cellDeltas: number[][] = [];
           for (let r = 0; r < gridRows; r++) {
@@ -964,8 +1045,14 @@ export default function RoadScanner({
               const localDelta = Math.abs(val - neighborAvg);
               const baselineDelta = Math.abs(val - roadBaseline);
 
-              // Cavity criteria: localized contrast drop or deep dark asphalt crater / puddle
-              const cavity = (localDelta >= 16) || (val < roadBaseline * 0.72 && baselineDelta >= 20);
+              // Genuine cavity criteria:
+              // 1. Sharp localized contrast drop into depression: localDelta >= 20 and darker than baseline
+              // 2. Deep dark asphalt crater: val < roadBaseline - 25 and baselineDelta >= 22
+              // 3. Water-filled reflective puddle inside eroded cavity: val > roadBaseline + 28 with dark eroded surround
+              const cavity = (localDelta >= 20 && val < roadBaseline) || 
+                             (val < roadBaseline - 25 && baselineDelta >= 22) || 
+                             (val > roadBaseline + 28 && neighborAvg < roadBaseline - 10);
+
               isCavity[r][c] = cavity;
               cellDeltas[r][c] = localDelta;
             }
@@ -1030,10 +1117,11 @@ export default function RoadScanner({
             }
           }
 
-          // Filter out noise (<2 cells) or road-wide illumination shifts (>35% of total grid cells)
-          const validClusters = clusters.filter(cl => cl.area >= 2 && cl.area <= (gridCols * gridRows) * 0.35);
+          // A real pothole must have at least 3 connected cavity cells with sharp edge contrast (maxDelta >= 22)
+          // Reject small road texture noise (<3 cells) and frame-wide illumination changes (>35% of grid)
+          const validClusters = clusters.filter(cl => cl.area >= 3 && cl.area <= (gridCols * gridRows) * 0.35 && cl.maxDelta >= 22);
           if (validClusters.length === 0) {
-            return resolve(null); // Clean road surface without potholes
+            return resolve(null); // Clean road surface / smooth asphalt / uniform background -> NO DETECTION
           }
 
           // Pick the primary pothole cluster (by localized contrast intensity and area)
@@ -1053,7 +1141,7 @@ export default function RoadScanner({
             for (let x = pxStart; x < pxEnd; x++) {
               const idx = (y * w + x) * 4;
               const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-              if (Math.abs(lum - roadBaseline) >= 16 || lum < roadBaseline * 0.72) {
+              if (Math.abs(lum - roadBaseline) >= 18 || lum < roadBaseline * 0.70) {
                 tightPixels++;
                 if (x < pMinX) pMinX = x;
                 if (x > pMaxX) pMaxX = x;
@@ -1095,6 +1183,13 @@ export default function RoadScanner({
 
           const dims = estimatePhysicalDimensions(bbox, confidence);
 
+          // Dynamic Pothole Size Tier and HUD Frame Color:
+          // Small: Light Orange
+          // Medium: Deep Orange
+          // Large: Dark Red
+          const widthMeters = Number((bbox.width * 2.8).toFixed(1));
+          const { sizeTier } = getPotholeSizeTierAndColor(widthMeters, bbox.width, bbox.height);
+
           resolve({
             id: `DET-${Date.now()}-${frameIndex}`,
             frameIndex,
@@ -1106,7 +1201,8 @@ export default function RoadScanner({
             sourceCamera: source === "VEHICLE_DASHCAM" ? "Vehicle Dashcam" : source === "PHONE_CAMERA" ? "Phone Camera" : "Recorded Video",
             severityScore,
             confidence,
-            description: "Dynamic pothole cavity identified on roadway surface.",
+            sizeTier,
+            description: `Dynamic ${sizeTier.toLowerCase()} pothole cavity identified on roadway surface.`,
             boundingBox: bbox,
             estimatedWidth: dims.estimatedWidth,
             estimatedLength: dims.estimatedLength,
@@ -1221,11 +1317,19 @@ export default function RoadScanner({
           rawDetectionsCount: prev.rawDetectionsCount + 1
         }));
 
+        const { sizeTier, frameColor } = getPotholeSizeTierAndColor(
+          Number((localDet.boundingBox.width * 2.8).toFixed(1)),
+          localDet.boundingBox.width,
+          localDet.boundingBox.height
+        );
+
         setActiveOverlayBox({
           bbox: localDet.boundingBox,
           category: localDet.category,
           confidence: localDet.confidence,
           severity: localDet.severityScore,
+          sizeTier,
+          frameColor,
           estimatedSizeText: `${localDet.estimatedWidth} × ${localDet.estimatedLength}`
         });
 
@@ -1237,6 +1341,7 @@ export default function RoadScanner({
         if (track) {
           track.hits += 1;
           track.lastSeen = Date.now();
+          track.sizeTier = sizeTier;
           if (localDet.confidence > track.bestConfidence) {
             track.bestConfidence = localDet.confidence;
             track.bestSeverity = localDet.severityScore;
@@ -1265,6 +1370,7 @@ export default function RoadScanner({
             estimatedLength: localDet.estimatedLength,
             estimatedArea: localDet.estimatedArea,
             sizeConfidence: localDet.sizeConfidence,
+            sizeTier: localDet.sizeTier || sizeTier,
             gps: localDet.gps,
             confirmed: true,
             reportedIncidentId: null
@@ -1308,7 +1414,7 @@ export default function RoadScanner({
 
       if (!json.detected || detections.length === 0) {
         setActiveOverlayBox(null);
-        setAiStatusNotice("No road hazard detected in this frame / image.");
+        setAiStatusNotice("Scanning road surface... Clean pavement / no hazard detected.");
         return;
       }
 
@@ -1321,13 +1427,20 @@ export default function RoadScanner({
 
             const bbox: BoundingBox = det.boundingBox || { x: 0.35, y: 0.55, width: 0.30, height: 0.22 };
             const dims = estimatePhysicalDimensions(bbox, det.confidence);
+            const { sizeTier, frameColor } = getPotholeSizeTierAndColor(
+              Number((bbox.width * 2.8).toFixed(1)),
+              bbox.width,
+              bbox.height
+            );
 
-            // Update active overlay for visual HUD
+            // Update active overlay for visual HUD with dynamic size and color
             setActiveOverlayBox({
               bbox,
               category: det.category || "POTHOLE",
               confidence: det.confidence,
               severity: det.severityScore || 80,
+              sizeTier,
+              frameColor,
               estimatedSizeText: dims.formattedText
             });
 
@@ -1342,6 +1455,7 @@ export default function RoadScanner({
               sourceCamera: source === "VEHICLE_DASHCAM" ? "Vehicle Dashcam" : source === "PHONE_CAMERA" ? "Phone Camera" : "Recorded Video",
               severityScore: det.severityScore || 80,
               confidence: det.confidence,
+              sizeTier,
               description: det.description || "Road hazard identified by AI vision scanner.",
               boundingBox: bbox,
               estimatedWidth: dims.estimatedWidth,
@@ -1360,6 +1474,7 @@ export default function RoadScanner({
               // Existing track within temporal proximity
               track.hits += 1;
               track.lastSeen = Date.now();
+              track.sizeTier = sizeTier;
               if (det.confidence > track.bestConfidence) {
                 track.bestConfidence = det.confidence;
                 track.bestSeverity = det.severityScore || track.bestSeverity;
@@ -1395,6 +1510,7 @@ export default function RoadScanner({
                 estimatedLength: dims.estimatedLength,
                 estimatedArea: dims.estimatedArea,
                 sizeConfidence: dims.sizeConfidence,
+                sizeTier,
                 gps: rawDet.gps,
                 confirmed: shouldConfirmNew,
                 reportedIncidentId: null
@@ -1436,11 +1552,19 @@ export default function RoadScanner({
           rawDetectionsCount: prev.rawDetectionsCount + 1
         }));
 
+        const { sizeTier, frameColor } = getPotholeSizeTierAndColor(
+          Number((localDet.boundingBox.width * 2.8).toFixed(1)),
+          localDet.boundingBox.width,
+          localDet.boundingBox.height
+        );
+
         setActiveOverlayBox({
           bbox: localDet.boundingBox,
           category: localDet.category,
           confidence: localDet.confidence,
           severity: localDet.severityScore,
+          sizeTier,
+          frameColor,
           estimatedSizeText: `${localDet.estimatedWidth} × ${localDet.estimatedLength}`
         });
 
@@ -1879,11 +2003,14 @@ export default function RoadScanner({
       await processConfirmedHazard(track);
 
       // Set visual overlay to show active test bounding box
+      const testColors = getPotholeSizeTierAndColor(0.6, bboxTest.width, bboxTest.height);
       setActiveOverlayBox({
         bbox: bboxTest,
         category: "SYNTHETIC_TEST",
         confidence: 76,
         severity: 62,
+        sizeTier: testColors.sizeTier,
+        frameColor: testColors.frameColor,
         estimatedSizeText: dims.formattedText
       });
 
@@ -2215,21 +2342,27 @@ export default function RoadScanner({
               </div>
             )}
 
-            {/* 4. VISUAL DETECTION OVERLAY: REAL RED BOUNDING BOX (No fake centered box) */}
+            {/* 4. VISUAL DETECTION OVERLAY: DYNAMIC SIZING & COLOR (Light Orange -> Dark Red based on Pothole Size) */}
             {activeOverlayBox && (
               <div
-                className="absolute border-2 border-red-500 bg-red-500/20 shadow-[0_0_20px_rgba(239,68,68,0.6)] rounded-sm pointer-events-none z-30 transition-all duration-300"
+                className="absolute border-2 rounded-sm pointer-events-none z-30 transition-all duration-300"
                 style={{
                   left: `${activeOverlayBox.bbox.x * 100}%`,
                   top: `${activeOverlayBox.bbox.y * 100}%`,
                   width: `${activeOverlayBox.bbox.width * 100}%`,
-                  height: `${activeOverlayBox.bbox.height * 100}%`
+                  height: `${activeOverlayBox.bbox.height * 100}%`,
+                  borderColor: activeOverlayBox.frameColor.border,
+                  backgroundColor: activeOverlayBox.frameColor.bg,
+                  boxShadow: activeOverlayBox.frameColor.shadow
                 }}
               >
-                {/* High-tech HUD tag above the box */}
-                <div className="absolute -top-7 left-0 bg-red-600 text-white font-mono text-[9px] font-black px-2 py-0.5 rounded-t whitespace-nowrap shadow-md flex items-center gap-1.5 uppercase">
+                {/* High-tech HUD tag above the box with Dynamic Color Badge */}
+                <div
+                  className="absolute -top-7 left-0 text-white font-mono text-[9px] font-black px-2 py-0.5 rounded-t whitespace-nowrap shadow-md flex items-center gap-1.5 uppercase"
+                  style={{ backgroundColor: activeOverlayBox.frameColor.badgeBg }}
+                >
                   <span className="w-1.5 h-1.5 rounded-full bg-white dark:bg-slate-900 animate-ping"></span>
-                  <span>🔴 {activeOverlayBox.category}</span>
+                  <span>{activeOverlayBox.frameColor.icon} {activeOverlayBox.category} • {activeOverlayBox.sizeTier.toUpperCase()}</span>
                   <span>•</span>
                   <span>{activeOverlayBox.confidence}% CONF</span>
                   <span>•</span>
@@ -2237,8 +2370,14 @@ export default function RoadScanner({
                 </div>
 
                 {activeOverlayBox.estimatedSizeText && (
-                  <div className="absolute -bottom-5 left-0 bg-black/85 text-red-300 font-mono text-[8px] font-bold px-1.5 py-0.2 rounded-b whitespace-nowrap border border-red-600/40">
-                    Est: {activeOverlayBox.estimatedSizeText}
+                  <div
+                    className="absolute -bottom-5 left-0 bg-black/90 font-mono text-[8.5px] font-bold px-2 py-0.5 rounded-b whitespace-nowrap border"
+                    style={{
+                      color: activeOverlayBox.frameColor.border,
+                      borderColor: activeOverlayBox.frameColor.border
+                    }}
+                  >
+                    Size: {activeOverlayBox.sizeTier} ({activeOverlayBox.estimatedSizeText})
                   </div>
                 )}
               </div>
