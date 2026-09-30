@@ -5,7 +5,7 @@ import {
   Loader2
 } from "lucide-react";
 import { User as UserType, Report, ReportCategory } from "../types";
-import { createReport } from "../services/reportsService";
+import { createEmergencySOS } from "../services/reportsService";
 import { createNotification } from "../services/notificationsService";
 import { useAuth } from "../context/AuthContext";
 import { auth } from "../lib/firebase";
@@ -40,13 +40,10 @@ export default function CitizenEmergencySOS({ currentUser, onReportCreated }: Ci
     };
   }, []);
 
-  const acquireLocation = (): Promise<{ lat: number; lng: number; accuracy?: number; name: string }> => {
-    return new Promise((resolve) => {
+  const acquireLocation = (): Promise<{ lat: number; lng: number; accuracy: number; name: string }> => {
+    return new Promise((resolve, reject) => {
       if (!("geolocation" in navigator)) {
-        const fallback = { lat: 28.6139, lng: 77.2090, accuracy: 25, name: "Delhi NCR Command Zone (Default Grid)" };
-        setUserCoords(fallback);
-        setLocationLabel(fallback.name);
-        resolve(fallback);
+        reject(new Error("Exact GPS location is required for SOS. Your browser or device does not support geolocation."));
         return;
       }
 
@@ -56,19 +53,17 @@ export default function CitizenEmergencySOS({ currentUser, onReportCreated }: Ci
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
             accuracy: Math.round(pos.coords.accuracy || 10),
-            name: `${pos.coords.latitude.toFixed(4)}° N, ${pos.coords.longitude.toFixed(4)}° E (±${Math.round(pos.coords.accuracy || 10)}m)`
+            name: `${pos.coords.latitude.toFixed(6)}° N, ${pos.coords.longitude.toFixed(6)}° E (±${Math.round(pos.coords.accuracy || 10)}m)`
           };
           setUserCoords(coords);
           setLocationLabel(coords.name);
           resolve(coords);
         },
-        () => {
-          const fallback = { lat: 28.6139, lng: 77.2090, accuracy: 25, name: "28.6139° N, 77.2090° E (Central Delhi NCR)" };
-          setUserCoords(fallback);
-          setLocationLabel(fallback.name);
-          resolve(fallback);
+        (err) => {
+          console.warn("Geolocation acquisition denied or unavailable for SOS:", err.message);
+          reject(new Error("Exact GPS location is required for SOS. Please enable location access and try again."));
         },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     });
   };
@@ -87,90 +82,59 @@ export default function CitizenEmergencySOS({ currentUser, onReportCreated }: Ci
       return;
     }
 
-    setCountdown(3);
-    const loc = await acquireLocation();
+    try {
+      setLocationLabel("Acquiring exact satellite GPS fix...");
+      const loc = await acquireLocation();
+      setCountdown(3);
 
-    countdownIntervalRef.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev === null || prev <= 1) {
-          clearInterval(countdownIntervalRef.current);
-          countdownIntervalRef.current = null;
-          executeSOSBroadcast(loc);
-          return null;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+      countdownIntervalRef.current = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev === null || prev <= 1) {
+            clearInterval(countdownIntervalRef.current);
+            countdownIntervalRef.current = null;
+            executeSOSBroadcast(loc);
+            return null;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (gpsErr: any) {
+      setErrorMessage(gpsErr.message || "Exact GPS location is required for SOS. Please enable location access and try again.");
+      setLocationLabel("GPS acquisition required. Tap Broadcast SOS to retry.");
+    }
   };
 
-  const executeSOSBroadcast = async (coords: { lat: number; lng: number; name: string }) => {
+  const executeSOSBroadcast = async (coords: { lat: number; lng: number; accuracy: number; name: string }) => {
     setIsSubmitting(true);
     setSosActive(true);
     setDispatchStatus("BROADCASTING");
 
-    const activeUid = auth.currentUser?.uid || authUser?.uid || currentUser?.id;
-    const activeEmail = auth.currentUser?.email || authUser?.email || currentUser?.email || "citizen@urbanpulse.ai";
-    const activeName = auth.currentUser?.displayName || authUser?.displayName || currentUser?.fullName || "Citizen Reporter";
-
-    if (!activeUid) {
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) {
       setErrorMessage("Please sign in before sending Emergency SOS.");
       setSosActive(false);
       setIsSubmitting(false);
       return;
     }
 
-    let reportCategory: ReportCategory = "Road Obstruction";
-    if (emergencyType.includes("Cave-In") || emergencyType.includes("Road")) {
-      reportCategory = "Pothole";
-    } else if (emergencyType.includes("Flood")) {
-      reportCategory = "Waterlogging";
-    } else if (emergencyType.includes("Electrical")) {
-      reportCategory = "Broken Streetlight";
-    }
-
     try {
-      const newReport = await createReport(
-        {
-          title: `🚨 CRITICAL SOS: ${emergencyType}`,
-          description: `EMERGENCY ALERT: ${emergencyType} broadcasted from live GPS [${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]. Automated high-priority municipal dispatch required immediately.`,
-          category: reportCategory,
-          location: `Emergency Location: ${coords.name}`,
-          latitude: coords.lat,
-          longitude: coords.lng,
-          severity: 98,
-          riskLevel: "High",
-          priority: "Critical",
-          confidence: 99,
-          source: "MANUAL_REPORT",
-          image: "https://images.unsplash.com/photo-1584467541268-b040f83be3fd?auto=format&fit=crop&w=600&q=80",
-          aiAnalysis: {
-            category: "Emergency SOS Incident",
-            severityScore: 98,
-            riskLevel: "High",
-            confidence: 99,
-            description: `High-priority emergency SOS beacon triggered for ${emergencyType}.`,
-            recommendedActions: [
-              "Immediate emergency response unit dispatch",
-              "Notify municipal rapid-action squad",
-              "Establish perimeter around hazard"
-            ]
-          }
-        },
-        {
-          id: activeUid,
-          uid: activeUid,
-          email: activeEmail,
-          fullName: activeName
-        }
-      );
+      const newReport = await createEmergencySOS({
+        emergencyType: emergencyType,
+        latitude: coords.lat,
+        longitude: coords.lng,
+        gpsAccuracy: coords.accuracy,
+        gpsSource: "browser-geolocation",
+        locationDescription: coords.name,
+        emergencyContactRequested: true
+      });
 
       setCreatedReport(newReport);
       setDispatchStatus("DISPATCHED");
 
-      // Broadcast high-priority alerts
+      // Broadcast high-priority alerts auxiliary notification
       await createNotification(
         "🚨 CRITICAL SOS ACTIVATED",
-        `Emergency: ${emergencyType} reported by ${activeEmail} at [${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}]`,
+        `Emergency: ${emergencyType} reported by ${currentAuthUser.email || "Citizen"} at [${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]`,
         "alert_high_severity",
         "admin",
         "",
@@ -183,6 +147,7 @@ export default function CitizenEmergencySOS({ currentUser, onReportCreated }: Ci
     } catch (err: any) {
       console.error("SOS creation error:", err);
       setErrorMessage(err.message || "Failed to broadcast SOS to Firestore database. Please call 112 directly.");
+      setSosActive(false);
     } finally {
       setIsSubmitting(false);
     }

@@ -84,7 +84,11 @@ export function normalizeMapReport(report: Report): MapReportPoint | null {
     estimatedLength: report.estimatedLength,
     estimatedArea: report.estimatedArea,
     sourceCamera: report.sourceCamera,
-    observationsCount: report.observationsCount
+    observationsCount: report.observationsCount,
+    isSOS: report.isSOS,
+    sosType: report.sosType,
+    gpsAccuracy: report.gpsAccuracy,
+    reporterEmail: report.reporterEmail
   };
 }
 

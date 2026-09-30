@@ -267,6 +267,12 @@ export interface Report {
   fieldVerification?: FieldVerification;
   resolution?: FieldResolution;
   unsafeConditions?: UnsafeConditionReport[];
+  isSOS?: boolean;
+  sosType?: string;
+  sosTriggeredAt?: string;
+  gpsAccuracy?: number;
+  gpsSource?: "browser-geolocation";
+  emergencyContactRequested?: boolean;
   createdAt: string;
   updatedAt: string;
   aiAnalysis: AIAnalysis | null;
@@ -529,6 +535,10 @@ export interface MapReportPoint {
   estimatedArea?: string;
   sourceCamera?: string;
   observationsCount?: number;
+  isSOS?: boolean;
+  sosType?: string;
+  gpsAccuracy?: number;
+  reporterEmail?: string;
 }
 
 export interface HeatmapPoint {

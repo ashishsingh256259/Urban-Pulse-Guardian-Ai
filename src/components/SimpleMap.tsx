@@ -326,39 +326,43 @@ export default function SimpleMap({
 
       validMapPoints.forEach(point => {
         const isRoadScan = point.source === "ROAD_SCANNER";
-        const isCritical = point.severity >= 75;
+        const isSOS = Boolean(point.isSOS || (point.title && point.title.toLowerCase().includes("sos")));
+        const isCritical = point.severity >= 75 || isSOS;
         const isMedium = point.severity >= 45 && point.severity < 75;
 
-        // Visual Marker Pin styling: 🔴 High severity, 🟠 Medium, 🟡 Low
-        const primaryColor = isCritical ? "#dc2626" : isMedium ? "#ea580c" : "#eab308";
-        const pingClass = isCritical ? "animate-ping" : isMedium ? "animate-pulse" : "";
-        const badgeIcon = isRoadScan ? "📷" : "📝";
+        // Visual Marker Pin styling: 🚨 Emergency SOS, 🔴 High severity, 🟠 Medium, 🟡 Low
+        const primaryColor = isSOS ? "#b91c1c" : isCritical ? "#dc2626" : isMedium ? "#ea580c" : "#eab308";
+        const pingClass = isSOS ? "animate-ping" : isCritical ? "animate-ping" : isMedium ? "animate-pulse" : "";
+        const badgeIcon = isSOS ? "🚨" : isRoadScan ? "📷" : "📝";
 
         const customIcon = L.divIcon({
           className: "custom-div-icon-container",
           html: `
-            <div class="relative flex items-center justify-center w-10 h-10 -translate-x-1 -translate-y-1 group cursor-pointer" title="${point.title}">
-              <div class="absolute w-7 h-7 rounded-full border-2 ${pingClass} opacity-40" style="border-color: ${primaryColor};"></div>
-              <div class="w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center text-[10px] font-bold text-white transition-transform group-hover:scale-125" style="background-color: ${primaryColor};">
+            <div class="relative flex items-center justify-center w-11 h-11 -translate-x-1.5 -translate-y-1.5 group cursor-pointer" title="${point.title}">
+              <div class="absolute w-8 h-8 rounded-full border-2 ${pingClass} ${isSOS ? "bg-red-600/30" : "opacity-40"}" style="border-color: ${primaryColor};"></div>
+              <div class="w-7 h-7 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[12px] font-bold text-white transition-transform group-hover:scale-125" style="background-color: ${primaryColor};">
                 <span>${badgeIcon}</span>
               </div>
-              <div class="absolute -top-1 -right-1 px-1 bg-slate-900 text-white font-mono text-[7px] font-extrabold rounded-full shadow-xs">
-                ${point.severity}%
+              <div class="absolute -top-1 -right-1 px-1.5 bg-slate-900 text-white font-mono text-[7px] font-black rounded-full shadow-xs ${isSOS ? "border border-red-500 text-red-400" : ""}">
+                ${isSOS ? "SOS" : `${point.severity}%`}
               </div>
             </div>
           `,
-          iconSize: [32, 32],
-          iconAnchor: [16, 16]
+          iconSize: [36, 36],
+          iconAnchor: [18, 18]
         });
 
         const marker = L.marker([point.latitude, point.longitude], { 
           icon: customIcon,
           severity: point.severity,
-          isRoadScan
+          isRoadScan,
+          isSOS
         } as any);
 
         // Rich Interactive Popup UI matching requirements
-        const sourceBadge = isRoadScan
+        const sourceBadge = isSOS
+          ? `<span class="bg-red-100 text-red-800 text-[9px] font-extrabold px-1.5 py-0.5 rounded border border-red-300 animate-pulse">🚨 LIVE SOS ALERT</span>`
+          : isRoadScan
           ? `<span class="bg-purple-100 text-purple-800 text-[9px] font-bold px-1.5 py-0.5 rounded border border-purple-200">📷 ${point.sourceCamera || "Vehicle Dashcam"}</span>`
           : `<span class="bg-blue-100 text-blue-800 text-[9px] font-bold px-1.5 py-0.5 rounded border border-blue-200">📝 Citizen Report</span>`;
 
@@ -373,18 +377,19 @@ export default function SimpleMap({
           : "Recently";
 
         const popupContent = `
-          <div class="p-2 max-w-[270px] font-sans text-left">
+          <div class="p-2 max-w-[280px] font-sans text-left">
             <div class="flex items-center justify-between gap-1.5 mb-1.5 pb-1 border-b border-slate-100">
               <span class="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider">ID: ${point.id.slice(0, 10)}</span>
               <span class="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded ${
-                isCritical ? 'bg-red-100 text-red-700' : isMedium ? 'bg-orange-100 text-orange-700' : 'bg-yellow-100 text-yellow-800'
-              }">${point.severity}% Severity</span>
+                isSOS ? 'bg-red-600 text-white font-black' : isCritical ? 'bg-red-100 text-red-700' : isMedium ? 'bg-orange-100 text-orange-700' : 'bg-yellow-100 text-yellow-800'
+              }">${isSOS ? 'CRITICAL SOS' : `${point.severity}% Severity`}</span>
             </div>
             
             <div class="flex items-center gap-1.5 mb-1.5 flex-wrap">
               ${sourceBadge}
               ${statusBadge}
               ${point.confidence ? `<span class="bg-emerald-50 text-emerald-700 text-[9px] font-bold font-mono px-1.5 py-0.5 rounded border border-emerald-200">${point.confidence}% Conf</span>` : ''}
+              ${point.gpsAccuracy ? `<span class="bg-slate-100 text-slate-700 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded">±${Math.round(point.gpsAccuracy)}m GPS</span>` : ''}
             </div>
 
             ${point.image ? `
@@ -393,15 +398,23 @@ export default function SimpleMap({
               </div>
             ` : ''}
 
-            <h4 class="font-bold text-xs text-slate-900 line-clamp-1 mt-1">${point.title}</h4>
+            <h4 class="font-bold text-xs text-slate-900 line-clamp-2 mt-1 leading-snug">${point.title}</h4>
             
             <div class="mt-2 pt-1.5 border-t border-slate-100 space-y-0.5 text-[9.5px] text-slate-500">
               <div class="flex justify-between">
                 <span>Location:</span>
-                <span class="text-slate-700 font-semibold truncate max-w-[140px]">${point.location}</span>
+                <span class="text-slate-700 font-semibold truncate max-w-[150px]">${point.location}</span>
+              </div>
+              <div class="flex justify-between font-mono">
+                <span>Exact GPS:</span>
+                <span class="text-slate-900 font-bold">${point.latitude.toFixed(6)}°, ${point.longitude.toFixed(6)}°</span>
               </div>
               <div class="flex justify-between">
-                <span>Detected:</span>
+                <span>Reporter:</span>
+                <span class="text-slate-700 font-mono truncate max-w-[140px]">${point.reporterEmail || "Citizen"}</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Time:</span>
                 <span class="text-slate-700 font-mono">${detectedTime}</span>
               </div>
             </div>

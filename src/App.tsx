@@ -21,6 +21,7 @@ import RoadAiCandidateReview from "./components/RoadAiCandidateReview";
 import SafeRouteNav from "./components/SafeRouteNav";
 import RewardsPortal from "./components/RewardsPortal";
 import CitizenEmergencySOS from "./components/CitizenEmergencySOS";
+import EmergencySOSSidebar from "./components/EmergencySOSSidebar";
 import CitizenCopilot from "./components/CitizenCopilot";
 import CitizenHome from "./components/CitizenHome";
 import MunicipalHome from "./components/MunicipalHome";
@@ -29,6 +30,7 @@ import FooterEmergencyButton from "./components/FooterEmergencyButton";
 import FieldTeamDashboard from "./components/FieldTeamDashboard";
 import AdminPanel from "./components/AdminPanel";
 import { DispatchManagement } from "./components/DispatchManagement";
+import { subscribeToRealtimeSOS } from "./services/reportsService";
 import RoadRiskIntelligenceView from "./components/RoadRiskIntelligenceView";
 import { Moon, Sun } from "lucide-react";
 import { useLanguage } from "./i18n/LanguageContext";
@@ -96,6 +98,7 @@ export default function App() {
   const [reports, setReports] = useState<Report[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [realtimeSosAlerts, setRealtimeSosAlerts] = useState<Report[]>([]);
   
   // Road Scanner & Civic Rewards State
   const [activeScanSession, setActiveScanSession] = useState<RoadScanSession | null>(null);
@@ -264,9 +267,23 @@ export default function App() {
     const unsubNotifs = subscribeToNotifications(currentUser.email, currentUser.role as any, (fetchedNotifs) => {
       setNotifications(fetchedNotifs);
     });
+
+    // Real-time instant SOS detection for Municipal & Admin dashboards (no polling, no refresh)
+    let unsubSOS = () => {};
+    if (currentUser.role === "admin" || currentUser.role === "municipal") {
+      unsubSOS = subscribeToRealtimeSOS((newSOS) => {
+        console.log("[App] Instant Realtime Emergency SOS Received:", newSOS.id, newSOS.title);
+        setRealtimeSosAlerts((prev) => {
+          if (prev.some((a) => a.id === newSOS.id)) return prev;
+          return [newSOS, ...prev];
+        });
+      });
+    }
+
     return () => {
       unsubReports();
       unsubNotifs();
+      unsubSOS();
     };
   }, [currentUser?.id, currentUser?.email, currentUser?.role]);
 
@@ -2751,6 +2768,26 @@ export default function App() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* REAL-TIME PROMINENT EMERGENCY SOS SIDEBAR FOR MUNICIPAL & ADMIN OPERATORS */}
+      {(currentUser?.role === "admin" || currentUser?.role === "municipal") && (
+        <EmergencySOSSidebar
+          alerts={realtimeSosAlerts}
+          onDismiss={(reportId) => {
+            setRealtimeSosAlerts((prev) => prev.filter((a) => a.id !== reportId));
+          }}
+          onViewOnMap={(sosReport) => {
+            setSelectedReport(sosReport);
+            // Navigate to view containing GIS map if not currently on one
+            if (activeSubTab !== "command-center" && activeSubTab !== "infrastructure" && activeSubTab !== "dispatch-management") {
+              setActiveSubTab("command-center");
+            }
+          }}
+          onOpenIncident={(sosReport) => {
+            setSelectedReport(sosReport);
+          }}
+        />
       )}
 
       {/* CORE INSPECTOR DIALOG MODAL PANEL */}

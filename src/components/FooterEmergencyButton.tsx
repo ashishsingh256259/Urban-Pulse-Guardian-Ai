@@ -17,7 +17,7 @@ import {
   Volume2
 } from "lucide-react";
 import { User, Report } from "../types";
-import { createReport } from "../services/reportsService";
+import { createEmergencySOS } from "../services/reportsService";
 import { createNotification } from "../services/notificationsService";
 import { useAuth } from "../context/AuthContext";
 import { auth } from "../lib/firebase";
@@ -62,18 +62,17 @@ export default function FooterEmergencyButton({
     };
   }, []);
 
-  // Acquire high accuracy GPS location
-  const acquireLocation = (): Promise<{ lat: number; lng: number; accuracy?: number; name: string }> => {
-    return new Promise((resolve) => {
+  // Acquire high accuracy GPS location without mock/fallback coordinates
+  const acquireLocation = (): Promise<{ lat: number; lng: number; accuracy: number; name: string }> => {
+    return new Promise((resolve, reject) => {
       setGpsStatus("LOCATING");
       setLocationName("Locking GPS satellite fix...");
 
       if (!("geolocation" in navigator)) {
-        const fallback = { lat: 28.6139, lng: 77.2090, accuracy: 15, name: "Delhi NCR Command Zone (Default Grid)" };
-        setUserCoords(fallback);
         setGpsStatus("FALLBACK");
-        setLocationName(fallback.name);
-        resolve(fallback);
+        const errMsg = "Exact GPS location is required for SOS. Your browser or device does not support geolocation.";
+        setErrorMessage(errMsg);
+        reject(new Error(errMsg));
         return;
       }
 
@@ -83,7 +82,7 @@ export default function FooterEmergencyButton({
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
             accuracy: Math.round(pos.coords.accuracy || 10),
-            name: `Live GPS Fix (${pos.coords.latitude.toFixed(4)}° N, ${pos.coords.longitude.toFixed(4)}° E) ±${Math.round(pos.coords.accuracy || 10)}m`
+            name: `Live GPS Fix (${pos.coords.latitude.toFixed(6)}° N, ${pos.coords.longitude.toFixed(6)}° E) ±${Math.round(pos.coords.accuracy || 10)}m`
           };
           setUserCoords(coords);
           autoLockCoordsRef.current = coords;
@@ -92,21 +91,14 @@ export default function FooterEmergencyButton({
           resolve(coords);
         },
         (err) => {
-          console.warn("Geolocation warning in Quick-Action SOS:", err.message);
-          // Fallback to active metro coordinates
-          const fallback = { 
-            lat: 28.6139, 
-            lng: 77.2090, 
-            accuracy: 25, 
-            name: "Connaught Place / Central Municipal Grid (GPS Fallback)" 
-          };
-          setUserCoords(fallback);
-          autoLockCoordsRef.current = fallback;
+          console.warn("Geolocation denied or unavailable for SOS:", err.message);
           setGpsStatus("FALLBACK");
-          setLocationName(fallback.name);
-          resolve(fallback);
+          const errMsg = "Exact GPS location is required for SOS. Please enable location access and try again.";
+          setErrorMessage(errMsg);
+          setLocationName("GPS acquisition failed. Location access required.");
+          reject(new Error(errMsg));
         },
-        { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     });
   };
@@ -201,41 +193,17 @@ export default function FooterEmergencyButton({
         ? `EMERGENCY ALERT: ${emergencyNote.trim()} | Triggered via Footer Quick-Action SOS at coordinates [${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]. Requires immediate municipal hazard response.`
         : `CRITICAL INCIDENT SOS: Immediate emergency beacon broadcasted from live GPS coordinates [${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]. Automated high-priority dispatch requested.`;
 
-      // 1. Create Report in Firestore
-      const newReport = await createReport(
-        {
-          title: customTitle,
-          description: customDesc,
-          category: emergencyCategory,
-          location: locationName || `Urban Sector (GPS ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)})`,
-          latitude: coords.lat,
-          longitude: coords.lng,
-          severity: 98,
-          riskLevel: "High",
-          priority: "Critical",
-          confidence: 99,
-          source: "MANUAL_REPORT",
-          image: "https://images.unsplash.com/photo-1584467541268-b040f83be3fd?auto=format&fit=crop&w=600&q=80",
-          aiAnalysis: {
-            category: "Emergency SOS Incident",
-            severityScore: 98,
-            riskLevel: "High",
-            confidence: 99,
-            description: "High-priority emergency SOS beacon triggered directly by citizen via quick-action emergency alert.",
-            recommendedActions: [
-              "Immediate emergency response dispatch",
-              "Notify nearest municipal rapid-action team",
-              "Verify live beacon telemetry & road perimeter"
-            ]
-          }
-        },
-        {
-          id: activeUser.id,
-          uid: activeUser.id,
-          email: activeUser.email,
-          fullName: activeUser.fullName
-        }
-      );
+      // 1. Create Report in Firestore via canonical SOS creation engine
+      const newReport = await createEmergencySOS({
+        emergencyType: emergencyCategory,
+        latitude: coords.lat,
+        longitude: coords.lng,
+        gpsAccuracy: coords.accuracy || 10,
+        gpsSource: "browser-geolocation",
+        locationDescription: locationName || `Live GPS Fix (${coords.lat.toFixed(6)}° N, ${coords.lng.toFixed(6)}° E)`,
+        notes: emergencyNote.trim() || undefined,
+        emergencyContactRequested: true
+      });
 
       // 2. Broadcast High-Severity Notification to Municipal Admins
       await createNotification(

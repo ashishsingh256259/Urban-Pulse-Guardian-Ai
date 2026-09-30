@@ -100,10 +100,12 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated() && (
         request.resource.data.userId == request.auth.uid ||
-        request.resource.data.reporterEmail == request.auth.token.email
+        (request.resource.data.isSOS == true && request.resource.data.userId == request.auth.uid) ||
+        (request.auth.token.email != null && request.resource.data.reporterEmail == request.auth.token.email)
       );
       allow update: if isAuthenticated() && (
         resource.data.userId == request.auth.uid ||
+        isMunicipal() ||
         isFieldTeam()
       );
       allow delete: if isMunicipal();

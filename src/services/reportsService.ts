@@ -10,6 +10,7 @@ import {
   where,
   orderBy,
   limit,
+  onSnapshot,
   FirestoreDataConverter,
   DocumentData,
   QueryDocumentSnapshot,
@@ -44,8 +45,8 @@ export const reportConverter: FirestoreDataConverter<Report> = {
     const docData: DocumentData = {
       id: report.id,
       reportId: report.id,
-      userId: report.userId || "",
-      reporterEmail: report.reporterEmail || "citizen@urbanpulse.gov",
+      userId: report.userId || auth.currentUser?.uid || "",
+      reporterEmail: report.reporterEmail || auth.currentUser?.email || "citizen@urbanpulse.gov",
       title: report.title || "Hazard Incident",
       description: report.description || "",
       category: report.category || "Pothole",
@@ -80,6 +81,14 @@ export const reportConverter: FirestoreDataConverter<Report> = {
     if (report.workflowState) docData.workflowState = report.workflowState;
     if (report.sourceCamera) docData.sourceCamera = report.sourceCamera;
     if (report.boundingBox) docData.boundingBox = report.boundingBox;
+
+    // Structured SOS First-Class Data Model
+    if (report.isSOS !== undefined) docData.isSOS = Boolean(report.isSOS);
+    if (report.sosType) docData.sosType = report.sosType;
+    if (report.sosTriggeredAt) docData.sosTriggeredAt = report.sosTriggeredAt;
+    if (report.gpsAccuracy !== undefined && report.gpsAccuracy !== null) docData.gpsAccuracy = Number(report.gpsAccuracy);
+    if (report.gpsSource) docData.gpsSource = report.gpsSource;
+    if (report.emergencyContactRequested !== undefined) docData.emergencyContactRequested = Boolean(report.emergencyContactRequested);
 
     return stripUndefinedDeep(docData);
   },
@@ -120,6 +129,12 @@ export const reportConverter: FirestoreDataConverter<Report> = {
       workflowState: data.workflowState,
       sourceCamera: data.sourceCamera,
       boundingBox: data.boundingBox,
+      isSOS: Boolean(data.isSOS),
+      sosType: data.sosType || undefined,
+      sosTriggeredAt: data.sosTriggeredAt || undefined,
+      gpsAccuracy: data.gpsAccuracy !== undefined ? Number(data.gpsAccuracy) : undefined,
+      gpsSource: data.gpsSource || undefined,
+      emergencyContactRequested: data.emergencyContactRequested !== undefined ? Boolean(data.emergencyContactRequested) : undefined,
       createdAt: data.createdAt || new Date().toISOString(),
       updatedAt: data.updatedAt || new Date().toISOString(),
       aiAnalysis: data.aiAnalysis || null
@@ -149,6 +164,12 @@ export interface CreateReportInput {
   roadScanId?: string;
   clusterCount?: number;
   evidenceFrames?: string[];
+  isSOS?: boolean;
+  sosType?: string;
+  sosTriggeredAt?: string;
+  gpsAccuracy?: number;
+  gpsSource?: "browser-geolocation";
+  emergencyContactRequested?: boolean;
 }
 
 export function validateCoordinates(lat: number, lng: number): { valid: boolean; error?: string } {
@@ -288,6 +309,12 @@ export async function createReport(
     roadScanId: input.roadScanId,
     clusterCount: input.clusterCount ?? 1,
     evidenceFrames: input.evidenceFrames || [],
+    isSOS: input.isSOS,
+    sosType: input.sosType,
+    sosTriggeredAt: input.sosTriggeredAt,
+    gpsAccuracy: input.gpsAccuracy,
+    gpsSource: input.gpsSource,
+    emergencyContactRequested: input.emergencyContactRequested,
     createdAt: timestamp,
     updatedAt: timestamp,
     aiAnalysis: input.aiAnalysis || null
@@ -328,6 +355,191 @@ export async function createReport(
     handleFirestoreError(error, OperationType.CREATE, path);
     return canonicalReport;
   }
+}
+
+// ===================================================
+// CANONICAL CITIZEN EMERGENCY SOS CREATION ENGINE
+// ===================================================
+
+export interface CreateEmergencySOSInput {
+  emergencyType: string;
+  latitude: number;
+  longitude: number;
+  gpsAccuracy: number;
+  gpsSource?: "browser-geolocation";
+  locationDescription?: string;
+  notes?: string;
+  emergencyContactRequested?: boolean;
+}
+
+/**
+ * Creates an authoritative citizen Emergency SOS record in Firestore `reports/{reportId}`.
+ * Strictly enforces Firebase Authentication, exact GPS coordinates (no Delhi fallbacks),
+ * and structured SOS metadata.
+ */
+export async function createEmergencySOS(
+  input: CreateEmergencySOSInput
+): Promise<Report> {
+  const currentAuthUser = auth.currentUser;
+  if (!currentAuthUser) {
+    throw new Error("Authentication required: Please sign in before broadcasting an Emergency SOS.");
+  }
+
+  const userId = currentAuthUser.uid;
+  const userEmail = currentAuthUser.email || "citizen@urbanpulse.org";
+
+  // Validate exact GPS coordinates - strictly rejects missing/NaN/out-of-range coordinates
+  const coordValidation = validateCoordinates(input.latitude, input.longitude);
+  if (!coordValidation.valid) {
+    throw new Error(`Location validation error: ${coordValidation.error || "Valid GPS coordinates are required for Emergency SOS"}`);
+  }
+
+  // Idempotency check to prevent repeated duplicate clicks during submission
+  const idempotencyKey = `SOS_${userId}_${input.latitude.toFixed(4)}_${input.longitude.toFixed(4)}_${input.emergencyType}`;
+  const now = Date.now();
+  const existingSubmission = recentSubmissions.get(idempotencyKey);
+  if (existingSubmission && (now - existingSubmission.timestamp) < 30000) {
+    console.warn("[reportsService] Intercepted duplicate SOS request within 30s idempotency window:", idempotencyKey);
+    const existing = await getReport(existingSubmission.reportId);
+    if (existing) return existing;
+  }
+
+  // Map category safely to existing system taxonomy
+  let reportCategory: ReportCategory = "Road Obstruction";
+  const emLower = (input.emergencyType || "").toLowerCase();
+  if (emLower.includes("cave-in") || emLower.includes("road") || emLower.includes("pothole")) {
+    reportCategory = "Pothole";
+  } else if (emLower.includes("flood") || emLower.includes("submerged") || emLower.includes("water")) {
+    reportCategory = "Waterlogging";
+  } else if (emLower.includes("electrical") || emLower.includes("wire") || emLower.includes("light")) {
+    reportCategory = "Broken Streetlight";
+  }
+
+  const reportId = `UP-${Math.floor(1000 + Math.random() * 9000)}`;
+  const timestamp = new Date().toISOString();
+  const locationLabel = input.locationDescription || `Emergency GPS Fix (${input.latitude.toFixed(6)}° N, ${input.longitude.toFixed(6)}° E ±${Math.round(input.gpsAccuracy)}m)`;
+
+  const canonicalSOSReport: Report = {
+    id: reportId,
+    userId: userId,
+    title: `🚨 LIVE SOS: ${input.emergencyType}`,
+    description: input.notes && input.notes.trim()
+      ? `CRITICAL CITIZEN SOS: ${input.emergencyType}. Details: ${input.notes.trim()}. Exact GPS: [${input.latitude}, ${input.longitude}] (±${Math.round(input.gpsAccuracy)}m). Automated high-priority municipal dispatch required.`
+      : `CRITICAL CITIZEN SOS: ${input.emergencyType} beacon broadcasted from exact GPS [${input.latitude}, ${input.longitude}] (±${Math.round(input.gpsAccuracy)}m). Automated high-priority municipal dispatch required.`,
+    category: reportCategory,
+    issueType: input.emergencyType,
+    severity: 98,
+    riskLevel: "High",
+    priority: "Critical",
+    confidence: 99,
+    status: "Pending",
+    location: locationLabel,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    image: "https://images.unsplash.com/photo-1584467541268-b040f83be3fd?auto=format&fit=crop&w=600&q=80",
+    evidenceUrl: "https://images.unsplash.com/photo-1584467541268-b040f83be3fd?auto=format&fit=crop&w=600&q=80",
+    reporterEmail: userEmail,
+    assignedTo: null,
+    source: "MANUAL_REPORT",
+    isSOS: true,
+    sosType: input.emergencyType,
+    sosTriggeredAt: timestamp,
+    gpsAccuracy: input.gpsAccuracy,
+    gpsSource: input.gpsSource || "browser-geolocation",
+    emergencyContactRequested: Boolean(input.emergencyContactRequested),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    aiAnalysis: {
+      category: "Emergency SOS Incident",
+      severityScore: 98,
+      riskLevel: "High",
+      confidence: 99,
+      description: `High-priority citizen emergency SOS beacon triggered for ${input.emergencyType}.`,
+      recommendedActions: [
+        "Immediate emergency response unit dispatch",
+        "Notify municipal rapid-action squad",
+        "Establish perimeter around hazard"
+      ]
+    }
+  };
+
+  const path = `reports/${reportId}`;
+  console.log(`[Firestore Pre-Write Auth Check] Operation: ${OperationType.CREATE} | Path: ${path} | Has currentUser: true | UID: ${userId}`);
+
+  try {
+    const reportRef = doc(db, "reports", reportId).withConverter(reportConverter);
+    const writePromise = setDoc(reportRef, canonicalSOSReport);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Firestore write timed out after 10 seconds.")), 10000)
+    );
+    await Promise.race([writePromise, timeoutPromise]);
+
+    recentSubmissions.set(idempotencyKey, { timestamp: now, reportId });
+
+    // Status history audit record in immutable ledger (non-blocking)
+    const historyId = `hist_${Date.now().toString(36)}`;
+    setDoc(doc(db, "history", historyId), {
+      id: historyId,
+      reportId: reportId,
+      status: "Pending",
+      updatedBy: userEmail,
+      comment: `Critical Citizen SOS Beacon broadcasted from live GPS fix [${input.latitude}, ${input.longitude}].`,
+      createdAt: timestamp
+    }).catch(hErr => console.warn("Could not log initial history document for SOS:", hErr));
+
+    return canonicalSOSReport;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+    return canonicalSOSReport;
+  }
+}
+
+/**
+ * Subscribes to real-time Emergency SOS events in Firestore.
+ * Uses docChanges() to ensure ONLY newly created SOS reports trigger the callback,
+ * preventing old historical SOS reports from displaying as fresh alerts on dashboard load.
+ */
+export function subscribeToRealtimeSOS(
+  onNewSOS: (sosReport: Report) => void
+): () => void {
+  if (!db) return () => {};
+
+  const q = query(
+    collection(db, "reports"),
+    where("isSOS", "==", true)
+  );
+
+  let isInitialLoad = true;
+
+  const unsubscribe = onSnapshot(
+    q,
+    (snapshot) => {
+      if (isInitialLoad) {
+        // Suppress initial historical snapshot from triggering live alerts
+        isInitialLoad = false;
+        return;
+      }
+
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === "added") {
+          const rawData = change.doc.data();
+          const report = {
+            id: change.doc.id,
+            ...rawData
+          } as Report;
+
+          if (report.isSOS) {
+            onNewSOS(report);
+          }
+        }
+      });
+    },
+    (error) => {
+      console.warn("[reportsService] Realtime SOS subscription note:", error);
+    }
+  );
+
+  return unsubscribe;
 }
 
 /**

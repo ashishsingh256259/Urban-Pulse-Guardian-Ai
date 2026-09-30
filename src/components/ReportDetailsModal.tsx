@@ -156,8 +156,13 @@ export default function ReportDetailsModal({
               Ticket: {report.id}
             </span>
 
-            {/* Unified Report Source Badge */}
-            {isRoadScanner ? (
+            {/* Unified Report Source & SOS Badges */}
+            {report.isSOS ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-300 shadow-xs animate-pulse">
+                <ShieldAlert className="w-3.5 h-3.5 text-red-600" />
+                <span>🚨 LIVE CITIZEN SOS</span>
+              </span>
+            ) : isRoadScanner ? (
               <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200 shadow-3xs">
                 <Camera className="w-3.5 h-3.5 text-purple-600" />
                 <span>AI Road Scanner</span>
@@ -308,14 +313,30 @@ export default function ReportDetailsModal({
                 </div>
                 <div className="flex justify-between text-xs">
                   <span>GPS Coordinates:</span>
-                  <span className="text-slate-700 font-mono text-[11px]">
-                    {report.latitude?.toFixed(5)}, {report.longitude?.toFixed(5)}
+                  <span className="text-slate-700 font-mono text-[11px] font-semibold">
+                    {report.latitude?.toFixed(6)}°, {report.longitude?.toFixed(6)}°
                   </span>
                 </div>
+                {report.gpsAccuracy !== undefined && (
+                  <div className="flex justify-between text-xs">
+                    <span>GPS Fix Accuracy:</span>
+                    <span className="text-emerald-700 font-mono text-[11px] font-bold">
+                      ±{Math.round(report.gpsAccuracy)} meters ({report.gpsSource || "browser-geolocation"})
+                    </span>
+                  </div>
+                )}
+                {report.sosType && (
+                  <div className="flex justify-between text-xs">
+                    <span>Emergency Incident:</span>
+                    <span className="text-red-700 font-bold">
+                      {report.sosType}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between text-xs">
                   <span>Source Channel:</span>
                   <span className="text-slate-800 font-bold">
-                    {isRoadScanner ? "AI Dashcam Vision Scanner" : "Manual Citizen Submission"}
+                    {report.isSOS ? "🚨 Citizen Live SOS Beacon" : isRoadScanner ? "AI Dashcam Vision Scanner" : "Manual Citizen Submission"}
                   </span>
                 </div>
                 <div className="flex justify-between text-xs">
