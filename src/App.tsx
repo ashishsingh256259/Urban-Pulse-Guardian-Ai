@@ -1203,6 +1203,7 @@ export default function App() {
               </div>
 
               {/* Controls and Selectors panel */}
+              {["citizen", "field_team"].includes(currentUser.role) && (
               <div className="flex flex-row xl:flex-col items-end gap-2.5 shrink-0 self-start sm:self-auto flex-wrap">
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold p-1 px-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-[#1E40AF] rounded-lg shrink-0 select-none uppercase tracking-wide">
@@ -1218,6 +1219,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              )}
             </div>
 
             {/* ROAD SCANNER DASHCAM & VISION ANALYSIS */}
