@@ -309,26 +309,6 @@ async function bootstrapFirestoreSeeds() {
 // SECURE GEMINI AI INITIALIZATION
 // ===================================================
 
-const apiKey = process.env.GEMINI_API_KEY;
-let ai: GoogleGenAI | null = null;
-
-if (apiKey && apiKey !== "YOUR_GEMINI_API_KEY" && apiKey.trim().length > 0) {
-  try {
-    ai = new GoogleGenAI({ 
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
-    console.log("[Gemini AI] Sovereign AI Engine successfully initialized on server.");
-  } catch (err) {
-    console.warn("[Gemini AI] Initialization warning:", err);
-  }
-} else {
-  console.log("[Gemini AI] No valid GEMINI_API_KEY in environment. Heuristic fallback mode active.");
-}
 
 // Model Sanitization Helper to prevent obsolete or invalid model identifiers from being used
 function sanitizeGeminiModelName(model?: string): string {
